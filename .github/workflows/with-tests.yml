@@ -25,7 +25,12 @@ jobs:
 
     steps:
     - name: Where we are?
-      run: uname -a; cat /etc/os-release || cat /etc/issue || python -m platform || true
+      run: |
+        uname -a; cat /etc/os-release || cat /etc/issue || python -m platform || true
+        gcc --version || true
+        clang --version || true
+        ld --version || true
+      shell: bash
 
     - uses: actions/checkout@v2
 

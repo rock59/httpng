@@ -101,6 +101,8 @@ set (HTTPNG_C_SRC
 set(HTTPNG_SRC ${HTTPNG_C_SRC} ${HEADERS})
 
 build_module(httpng_c "${HTTPNG_SRC}")
+build_module(router "httpng/router.c")
+set_target_properties(router PROPERTIES OUTPUT_NAME ${CMAKE_CURRENT_BINARY_DIR}/httpng/router)
 
 set(LIBS wslay xtm_api_static)
 
@@ -127,6 +129,8 @@ if (DISABLE_HTTP2)
     target_compile_definitions(httpng_c PRIVATE "DISABLE_HTTP2")
 endif(DISABLE_HTTP2)
 
+target_link_libraries(router httpng_c)
+
 if (NOT(ENABLE_ASAN))
     # Just test
     add_custom_target(test-linkability ALL COMMAND "$ENV{SHELL}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/linkability-helper.sh"
@@ -136,6 +140,7 @@ endif (NOT(ENABLE_ASAN))
 
 # Install library
 install(TARGETS httpng_c LIBRARY DESTINATION ${TARANTOOL_INSTALL_LIBDIR})
+install(TARGETS router LIBRARY DESTINATION ${TARANTOOL_INSTALL_LIBDIR}/httpng)
 install(FILES httpng.lua DESTINATION ${TARANTOOL_INSTALL_LUADIR})
 
 add_executable(process_helper httpng/process_helper.c)

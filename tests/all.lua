@@ -4,6 +4,8 @@ local fiber = require 'fiber'
 local popen
 pcall(function() popen = require 'popen' end)
 local curl_bin = 'curl'
+local router_module
+local router_checked = false
 
 local stubborn_handler = function(req, io)
 ::again::
@@ -126,6 +128,35 @@ local my_shell_r = function(cmd)
     return my_shell_internal(cmd, popen.opts.PIPE)
 end
 
+-- Returns false in case of anomaly ('no router' is ok)
+local load_router_module = function()
+    -- Check both ways to get router module.
+    router_module = require 'httpng.router'
+    local router_module_alt = require 'httpng'.router
+    return ((router_module == nil) == (router_module_alt == nil))
+end
+
+local ensure_router = function()
+::check_router_available::
+    if (router_checked) then
+        t.skip_if(router_module == nil,
+            'This test requires router support')
+        return
+    end
+
+    if (not load_router_module()) then
+        t.skip('This test requires router support but it is broken')
+    end
+
+    router_checked = true
+    goto check_router_available
+end
+
+local function get_new_router()
+    ensure_router()
+    return router_module.new()
+end
+
 g_shuttle_size = t.group('shuttle_size')
 
 --[[ There is no point testing other values - parameters are automatically
@@ -191,7 +222,8 @@ g_wrong_config.test_sites_path_is_nil = function()
 end
 
 g_wrong_config.test_handler_is_not_a_function = function()
-    t.assert_error_msg_content_equals('handler is not a function',
+    t.assert_error_msg_content_equals(
+        'handler is not a function or table (router object)',
         http.cfg, { handler = 42 })
 end
 
@@ -525,6 +557,10 @@ local foo_handler = function(req, io)
 end
 
 local bar_handler = function(req, io)
+    return { body = 'bar' }
+end
+
+local bar_placeholder_handler = function(req, io)
     return { body = 'bar' }
 end
 
@@ -1713,4 +1749,69 @@ g_hot_reload.test_reload_file = function()
     package.loaded[filename] = nil
     http.cfg{handler = require(filename).handler}
     check_site_content('', 'http', 'localhost:3300', 'bar')
+end
+
+g_good_handlers.test_router_available = function()
+    if (not load_router_module()) then
+        error('Router support is broken')
+    end
+    t.fail_if(router_module == nil, 'No router module available')
+end
+
+g_good_handlers.test_router_basics = function()
+    local router = get_new_router()
+    router:route({path = '/foo'}, foo_handler)
+    router:route({path = '/bar'}, bar_handler)
+
+    http.cfg{handler = router}
+    check_site_content('', 'http', 'localhost:3300/foo', 'foo')
+    check_site_content('', 'http', 'localhost:3300/bar', 'bar')
+end
+
+g_good_handlers.test_router_configured = function()
+    local router = get_new_router()
+    router:route({path = '/foo'}, foo_handler)
+
+    http.cfg{handler = router}
+    check_site_content('', 'http', 'localhost:3300/foo', 'foo')
+    check_site_content('', 'http', 'localhost:3300/bar', 'not found')
+
+    router:route({path = '/bar'}, bar_handler)
+    check_site_content('', 'http', 'localhost:3300/bar', 'bar')
+end
+
+g_good_handlers.test_router_collect = function()
+    local router = get_new_router()
+    router:route({path = '/foo'}, foo_handler)
+    router:route({path = '/bar'}, bar_handler)
+
+    http.cfg{handler = router}
+    check_site_content('', 'http', 'localhost:3300/foo', 'foo')
+    check_site_content('', 'http', 'localhost:3300/bar', 'bar')
+
+    http.shutdown()
+    router = nil
+    collectgarbage()
+end
+
+g_good_handlers.test_router_placeholder_regular = function()
+    local router = get_new_router()
+    router:route({path = '/foo'}, foo_handler)
+    router:route({path = '/:bar'}, bar_placeholder_handler)
+
+    http.cfg{handler = router}
+    check_site_content('', 'http', 'localhost:3300/foo', 'foo')
+    check_site_content('', 'http', 'localhost:3300/bar', 'bar')
+    check_site_content('', 'http', 'localhost:3300/stuff', 'bar')
+end
+
+g_good_handlers.test_router_placeholder_wildcard = function()
+    local router = get_new_router()
+    router:route({path = '/foo'}, foo_handler)
+    router:route({path = '/*bar'}, bar_placeholder_handler)
+
+    http.cfg{handler = router}
+    check_site_content('', 'http', 'localhost:3300/foo', 'foo')
+    check_site_content('', 'http', 'localhost:3300/bar', 'bar')
+    check_site_content('', 'http', 'localhost:3300/stuff', 'bar')
 end

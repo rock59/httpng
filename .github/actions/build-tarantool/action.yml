@@ -21,6 +21,6 @@ runs:
         git checkout ${{inputs.ref}}
         git submodule update --init --recursive
         CC=${{inputs.cc}} CXX=${{inputs.cxx}} cmake -B ${{github.workspace}}/build/tarantool/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} ${{inputs.cmake_defines}}
-        cmake --build ${{github.workspace}}/build/tarantool/build --parallel --config ${{env.BUILD_TYPE}}
+        cmake --build ${{github.workspace}}/build/tarantool/build --parallel --config ${{env.BUILD_TYPE}} -v
         cd ${{github.workspace}}/build/tarantool/build && sudo make install
       shell: bash

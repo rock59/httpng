@@ -1,3 +1,4 @@
+#include "router.h"
 #include "process_helper.h"
 #include <fcntl.h>
 #include <float.h>
@@ -9,13 +10,6 @@
 
 #include <xtm/xtm_api.h>
 
-#ifdef USE_LIBUV
-#define H2O_USE_LIBUV 1
-#else
-#define H2O_USE_EPOLL 1 /* FIXME */
-#include <h2o/evloop_socket.h>
-#endif /* USE_LIBUV */
-#include <h2o.h>
 #include <h2o/websocket.h>
 #include "../third_party/h2o/deps/cloexec/cloexec.h"
 #include "httpng_sem.h"
@@ -178,7 +172,7 @@ typedef struct {
 } thread_ctx_t;
 
 struct anchor;
-typedef struct {
+typedef struct shuttle {
 	h2o_req_t *never_access_this_req_from_tx_thread;
 	struct anchor *anchor;
 	thread_ctx_t *thread_ctx;
@@ -250,13 +244,6 @@ typedef struct waiter {
 	struct fiber *fiber;
 } waiter_t;
 
-typedef struct {
-	h2o_handler_t super;
-	int lua_handler_ref;
-	const char *path;
-	size_t path_len;
-} lua_h2o_handler_t;
-
 /* N. b.: must be relocatable when server is running
  * (do not store e. g. string buffers here).
  * It is better to not touch it from handlers at all. */
@@ -303,9 +290,6 @@ typedef struct {
 	lua_first_response_only_t first; /* Must be last member of struct. */
 } lua_response_struct_t;
 
-/* FIXME: Make it ushort and add sanity checks. */
-typedef unsigned header_offset_t;
-
 typedef struct {
 	header_offset_t name_size;
 	header_offset_t value_size;
@@ -316,6 +300,7 @@ typedef struct {
 	size_t offset_within_body; /* For use by HTTP server thread. */
 #endif /* SPLIT_LARGE_BODY */
 	int lua_handler_ref; /* Reference to user Lua handler. */
+	unsigned router_data_len;
 	unsigned path_len;
 	unsigned authority_len;
 	unsigned query_at;
@@ -381,6 +366,7 @@ static struct {
 	struct fiber *fiber_to_wake_on_reaping_done;
 	lua_site_t *lua_sites;
 	sni_map_t **sni_maps;
+	fill_router_data_t *fill_router_data;
 	double thread_termination_timeout;
 	double thr_timeout_start;
 	uint64_t openssl_security_level;
@@ -443,12 +429,6 @@ static const char msg_cant_switch_ssl_ctx[] =
  * Expected usage: handling disposed==true in postprocessing,
  * setting it as anchor->user_free_shuttle. */
 extern void free_shuttle(shuttle_t *);
-
-/* Must be called in HTTP server thread.
- * Should only be called if disposed==false.
- * Expected usage: when req handler can't or wouldn't queue request
- * to TX thread. */
-extern void free_shuttle_with_anchor(shuttle_t *);
 
 extern shuttle_t *prepare_shuttle2(h2o_req_t *);
 static void fill_http_headers(lua_State *L, lua_response_t *response,
@@ -1540,6 +1520,14 @@ retrieve_more_body(shuttle_t *const shuttle)
 }
 #endif /* SPLIT_LARGE_BODY */
 
+/* Launched in TX thread. */
+static inline void
+fill_router_data(lua_State *L, const char *path, unsigned data_len, void *data)
+{
+	if (conf.fill_router_data != NULL)
+		conf.fill_router_data(L, path, data_len, data);
+}
+
 /* Launched in TX thread.
  * Returns !0 in case of error. */
 static inline int
@@ -1549,6 +1537,7 @@ fill_received_headers_and_body(lua_State *L, shuttle_t *shuttle)
 	assert(!response->sent_something);
 	const received_http_header_handle_t *const handles =
 		(received_http_header_handle_t *)&response->un.req.buffer[
+			response->un.req.router_data_len +
 			response->un.req.path_len +
 				response->un.req.authority_len];
 	const unsigned num_headers = response->un.req.num_headers;
@@ -1568,6 +1557,10 @@ fill_received_headers_and_body(lua_State *L, shuttle_t *shuttle)
 		current_offset += handle->name_size + 1 + handle->value_size;
 	}
 	lua_setfield(L, -2, "headers");
+	fill_router_data(L, &response->un.req.buffer[
+			response->un.req.router_data_len],
+		response->un.req.router_data_len,
+		&response->un.req.buffer);
 #ifdef SPLIT_LARGE_BODY
 	if (!response->un.req.is_body_incomplete)
 #endif /* SPLIT_LARGE_BODY */
@@ -1943,10 +1936,13 @@ lua_fiber_func(va_list ap)
 	lua_setfield(L, -2, "version_major");
 	lua_pushinteger(L, response->un.req.version_minor);
 	lua_setfield(L, -2, "version_minor");
-	lua_pushlstring(L, response->un.req.buffer, response->un.req.path_len);
+	lua_pushlstring(L, &response->un.req.buffer[
+				response->un.req.router_data_len],
+			response->un.req.path_len);
 	lua_setfield(L, -2, "path");
-	lua_pushlstring(L, &response->un.req.buffer[response->un.req.path_len],
-		response->un.req.authority_len);
+	lua_pushlstring(L, &response->un.req.buffer[
+		response->un.req.router_data_len +
+		response->un.req.path_len], response->un.req.authority_len);
 	lua_setfield(L, -2, "host");
 	push_query(L, response);
 	lua_pushlstring(L, response->un.req.method,
@@ -2106,16 +2102,11 @@ prepare_authority(h2o_req_t *req)
 }
 
 /* Launched in HTTP server thread. */
-static int
-lua_req_handler(lua_h2o_handler_t *self, h2o_req_t *req)
+int
+lua_req_handler_ex(const char *path, h2o_req_t *req,
+	shuttle_t *shuttle, int lua_handler_ref,
+	unsigned router_data_len)
 {
-	shuttle_t *const shuttle = prepare_shuttle2(req);
-	if (shuttle == NULL) {
-		req->res.status = 500;
-		req->res.reason = "No memory";
-		h2o_send_inline(req, H2O_STRLIT("No memory\n"));
-		return 0;
-	}
 	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
 	if ((response->un.req.method_len = req->method.len) >
 	    sizeof(response->un.req.method)) {
@@ -2126,7 +2117,8 @@ lua_req_handler(lua_h2o_handler_t *self, h2o_req_t *req)
 		h2o_send_inline(req, H2O_STRLIT("Method name is too long\n"));
 		return 0;
 	}
-	unsigned current_offset = response->un.req.path_len = req->path.len;
+	unsigned current_offset = router_data_len +
+		(response->un.req.path_len = req->path.len);
 	response->un.req.authority_len = prepare_authority(req);
 	if (current_offset + response->un.req.authority_len >
 	    conf.max_path_len_lua) {
@@ -2138,6 +2130,7 @@ lua_req_handler(lua_h2o_handler_t *self, h2o_req_t *req)
 		return 0;
 	}
 
+	response->un.req.router_data_len = router_data_len;
 	const char *ws_client_key;
 	(void)h2o_is_websocket_handshake(req, &ws_client_key);
 	if (ws_client_key == NULL)
@@ -2150,7 +2143,7 @@ lua_req_handler(lua_h2o_handler_t *self, h2o_req_t *req)
 
 	memcpy(response->un.req.method, req->method.base,
 		response->un.req.method_len);
-	memcpy(response->un.req.buffer, req->path.base,
+	memcpy(&response->un.req.buffer[router_data_len], req->path.base,
 		response->un.req.path_len);
 	memcpy(&response->un.req.buffer[current_offset], req->authority.base,
 		response->un.req.authority_len);
@@ -2168,6 +2161,7 @@ lua_req_handler(lua_h2o_handler_t *self, h2o_req_t *req)
 	const size_t num_headers = req->headers.size;
 	/* response->un.req.buffer[] format:
 	 *
+	 * char router_data[router_data_len]
 	 * char path[response->un.req.path.len]
 	 * char authority[response->un.req.authority_len]
 	 * FIXME: Alignment to at least to header_offset_t should be here
@@ -2252,8 +2246,8 @@ lua_req_handler(lua_h2o_handler_t *self, h2o_req_t *req)
 	response->cancelled = false;
 	response->upgraded_to_websocket = false;
 	response->waiter = NULL;
-	response->un.req.lua_handler_ref = self->lua_handler_ref;
-	response->site_path = self->path;
+	response->un.req.lua_handler_ref = lua_handler_ref;
+	response->site_path = path;
 
 	socklen_t socklen = req->conn->callbacks->get_peername(req->conn,
 		(struct sockaddr *)&response->peer);
@@ -2281,6 +2275,23 @@ lua_req_handler(lua_h2o_handler_t *self, h2o_req_t *req)
 	return 0;
 }
 
+/* Launched in HTTP server thread. */
+static int
+lua_req_handler(lua_h2o_handler_t *self, h2o_req_t *req)
+{
+	shuttle_t *const shuttle = prepare_shuttle2(req);
+	return (shuttle == NULL) ? 0 : lua_req_handler_ex(self->path, req,
+		shuttle, self->lua_handler_ref, 0);
+}
+
+/* Launched in TX thread. */
+static inline bool
+is_router_used(lua_site_t *lua_site)
+{
+	return lua_site->lua_handlers[0]->super.on_req !=
+		(int (*)(h2o_handler_t *, h2o_req_t *))lua_req_handler;
+}
+
 /* Launched in TX thread. */
 static h2o_pathconf_t *
 register_handler(h2o_hostconf_t *hostconf,
@@ -2305,10 +2316,20 @@ register_lua_handler_part_one(lua_site_t *lua_site,
 	lua_site->real_path = NULL;
 }
 
+/* Launched in TX thread. */
+static inline void
+register_router_part_one(lua_site_t *lua_site,
+	const char *path, int ref)
+{
+	register_lua_handler_part_one(lua_site, path, ref);
+}
+
 /* Can be launched in TX thread or HTTP server thread. */
 static h2o_pathconf_t *
-register_lua_handler_part_two(h2o_hostconf_t *hostconf,
-	lua_site_t *lua_site, unsigned thread_idx)
+register_complex_handler_part_two(h2o_hostconf_t *hostconf,
+	lua_site_t *lua_site, unsigned thread_idx,
+	int (*c_handler)(lua_h2o_handler_t *, h2o_req_t *),
+	void *c_handler_param)
 {
 	/* These functions never return NULL, dying instead */
 	h2o_pathconf_t *pathconf =
@@ -2316,12 +2337,33 @@ register_lua_handler_part_two(h2o_hostconf_t *hostconf,
 	lua_h2o_handler_t *handler = (lua_h2o_handler_t *)
 		h2o_create_handler(pathconf, sizeof(*handler));
 	handler->super.on_req =
-		(int (*)(h2o_handler_t *, h2o_req_t *))lua_req_handler;
+		(int (*)(h2o_handler_t *, h2o_req_t *))c_handler;
 	handler->lua_handler_ref = lua_site->lua_handler_ref;
 	handler->path = lua_site->path;
+	handler->c_handler_param = c_handler_param;
 	handler->path_len = lua_site->path_len;
 	lua_site->lua_handlers[thread_idx] = handler;
 	return pathconf;
+}
+
+/* Can be launched in TX thread or HTTP server thread. */
+static h2o_pathconf_t *
+register_lua_handler_part_two(h2o_hostconf_t *hostconf,
+	lua_site_t *lua_site, unsigned thread_idx)
+{
+	return register_complex_handler_part_two(hostconf, lua_site,
+		thread_idx, lua_req_handler, NULL);
+}
+
+/* Launched in TX thread. */
+static h2o_pathconf_t *
+register_router_part_two(h2o_hostconf_t *hostconf,
+	lua_site_t *lua_site, unsigned thread_idx,
+	int (*handler)(lua_h2o_handler_t *, h2o_req_t *),
+	void *handler_param)
+{
+	return register_complex_handler_part_two(hostconf, lua_site,
+		thread_idx, handler, handler_param);
 }
 
 /* Can be launched in TX thread or HTTP server thread.
@@ -2353,6 +2395,51 @@ register_lua_handler(lua_site_t *lua_site,
 	for (thread_idx = 0; thread_idx < MAX_threads; ++thread_idx)
 		register_lua_handler_part_two(conf.thread_ctxs[thread_idx]
 			.hostconf, lua_site, thread_idx);
+}
+
+/* Launched in TX thread.
+ * Returns !0 on error. */
+static int
+register_router(lua_State *L, lua_site_t *lua_site, const char *path,
+	int ref, const char **lerr)
+{
+	lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+
+	lua_getfield(L, -1, ROUTER_FILL_ROUTER_DATA_FIELD_NAME);
+	if (!lua_islightuserdata(L, -1)) {
+		*lerr = "router." ROUTER_FILL_ROUTER_DATA_FIELD_NAME
+			" is not userdata";
+		lua_pop(L, 2);
+		return 1;
+	}
+	conf.fill_router_data = lua_touserdata(L, -1);
+
+	lua_getfield(L, -2, ROUTER_C_HANDLER_FIELD_NAME);
+	if (!lua_islightuserdata(L, -1)) {
+		*lerr = "router." ROUTER_C_HANDLER_FIELD_NAME
+			" is not userdata";
+		lua_pop(L, 3);
+		return 1;
+	}
+	void *const user_handler = lua_touserdata(L, -1);
+
+	lua_getfield(L, -3, ROUTER_C_HANDLER_PARAM_FIELD_NAME);
+	if (!lua_isuserdata(L, -1)) {
+		*lerr = "router." ROUTER_C_HANDLER_PARAM_FIELD_NAME
+			" is not userdata";
+		lua_pop(L, 4);
+		return 1;
+	}
+	void *const user_handler_param = lua_touserdata(L, -1);
+	lua_pop(L, 4);
+
+	register_router_part_one(lua_site, path, ref);
+	unsigned thread_idx;
+	for (thread_idx = 0; thread_idx < MAX_threads; ++thread_idx)
+		register_router_part_two(conf.thread_ctxs[thread_idx]
+			.hostconf, lua_site, thread_idx, user_handler,
+			user_handler_param);
+	return 0;
 }
 
 /* Launched in TX thread. */
@@ -2427,8 +2514,12 @@ prepare_shuttle2(h2o_req_t *req)
 {
 	thread_ctx_t *const thread_ctx = get_curr_thread_ctx();
 	shuttle_t *const shuttle = alloc_shuttle(thread_ctx);
-	if (shuttle == NULL)
+	if (shuttle == NULL) {
+		req->res.status = 500;
+		req->res.reason = "No memory";
+		h2o_send_inline(req, H2O_STRLIT("No memory\n"));
 		return NULL;
+	}
 	anchor_t *const anchor = (anchor_t *)h2o_mem_alloc_shared(&req->pool,
 		sizeof(anchor_t), &anchor_dispose);
 	anchor->user_free_shuttle = NULL;
@@ -3994,6 +4085,7 @@ on_shutdown_internal(lua_State *L, bool called_from_callback)
 	free(conf.lua_sites);
 	conf.configured = false;
 	conf.idx_of_root_site = -1;
+	conf.fill_router_data = NULL;
 	complain_loudly_about_leaked_fds();
 	conf.is_shutdown_in_progress = false;
 	return 0;
@@ -4874,8 +4966,9 @@ Skip_lua_sites:
 	lua_getfield(L, LUA_STACK_IDX_TABLE, "handler");
 	if (lua_isnil(L, -1))
 		goto Skip_main_lua_handler;
-	if (lua_type(L, -1) != LUA_TFUNCTION) {
-		lerr = "handler is not a function";
+	if (lua_type(L, -1) != LUA_TFUNCTION &&
+	    lua_type(L, -1) != LUA_TTABLE) {
+		lerr = "handler is not a function or table (router object)";
 		goto invalid_handler;
 	}
 
@@ -4900,15 +4993,36 @@ Skip_lua_sites:
 		if ((lua_site->path = (char *)malloc(1 + 1)) == NULL)
 			goto error_lua_primary_site_path_malloc;
 		lua_site->path_len = 1;
-		register_lua_handler_part_one(lua_site,
-			"/", luaL_ref(L, LUA_REGISTRYINDEX));
 		conf.idx_of_root_site = new_root_idx;
+		if (lua_type(L, -1) == LUA_TFUNCTION)
+			register_lua_handler_part_one(lua_site,
+				"/", luaL_ref(L, LUA_REGISTRYINDEX));
+		else {
+			lerr =
+			"Reconfiguring with router is not supported (yet ?)";
+			goto invalid_handler;
+		}
 		goto Skip_creating_primary_handler_structs;
 
 	Primary_handler_found:
 		lua_site = &conf.lua_sites[conf.idx_of_root_site];
 		if (lua_site->generation == generation) {
 			lerr = "duplicated site description for /";
+			goto invalid_sites;
+		}
+
+		if (is_router_used(lua_site)) {
+			if (lua_type(L, -1) == LUA_TFUNCTION) {
+					lerr =
+			"Replacing router with handler is not supported yet";
+					goto invalid_sites;
+				}
+			lerr = "Replacing router is not supported yet";
+			goto invalid_sites;
+		}
+		if (lua_type(L, -1) != LUA_TFUNCTION) {
+			lerr =
+			"Replacing handler with router is not supported yet";
 			goto invalid_sites;
 		}
 		lua_site->new_lua_handler_ref = luaL_ref(L, LUA_REGISTRYINDEX);
@@ -4938,8 +5052,12 @@ Skip_lua_sites:
 		goto invalid_handler;
 	}
 	lua_site->path_len = 1;
-	register_lua_handler(lua_site, "/",
-		luaL_ref(L, LUA_REGISTRYINDEX));
+	if (lua_type(L, -1) == LUA_TFUNCTION)
+		register_lua_handler(lua_site, "/",
+			luaL_ref(L, LUA_REGISTRYINDEX));
+	else if (register_router(L, lua_site, "/",
+	    luaL_ref(L, LUA_REGISTRYINDEX), &lerr) != 0)
+		goto invalid_handler;
 	lua_site->generation = generation;
 
 Skip_creating_primary_handler_structs:
@@ -5519,6 +5637,25 @@ error_no_parameters:
 	return luaL_error(L, lerr);
 }
 
+/* Launched in TX thread. */
+void
+httpng_flush_requests_to_router(void)
+{
+	if (!conf.configured)
+		return;
+	/* FIXME: Refactor function names. */
+	flush_lua_ref_handlers();
+}
+
+/* Launched in HTTP server thread. */
+void *
+get_router_data(shuttle_t *shuttle, unsigned *max_len)
+{
+	*max_len = conf.max_path_len_lua;
+	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
+	return &response->un.req.buffer;
+}
+
 static const struct luaL_Reg mylib[] = {
 	{"cfg", cfg},
 	{"shutdown", on_shutdown_for_user},
@@ -5532,5 +5669,7 @@ int
 luaopen_httpng_c(lua_State *L)
 {
 	luaL_newlib(L, mylib);
+	(void)luaL_dostring(L, "return require 'httpng.router'");
+	lua_setfield(L, -2, "router");
 	return 1;
 }

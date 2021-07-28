@@ -1794,6 +1794,7 @@ g_good_handlers.test_router_collect = function()
     collectgarbage()
 end
 
+--[[
 g_good_handlers.test_router_placeholder_regular = function()
     local router = get_new_router()
     router:route({path = '/foo'}, foo_handler)
@@ -1815,3 +1816,4 @@ g_good_handlers.test_router_placeholder_wildcard = function()
     check_site_content('', 'http', 'localhost:3300/bar', 'bar')
     check_site_content('', 'http', 'localhost:3300/stuff', 'bar')
 end
+--]]

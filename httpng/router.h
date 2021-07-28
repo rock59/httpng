@@ -25,6 +25,7 @@ typedef unsigned header_offset_t;
 typedef struct {
 	h2o_handler_t super;
 	int lua_handler_ref;
+	int router_ref; /* Not used for C routers. */
 	const char *path;
 
 	/* FIXME: Use separate struct for router handler? */
@@ -40,7 +41,7 @@ typedef void (fill_router_data_t)(struct lua_State *L, const char *path,
 struct shuttle;
 struct shuttle *prepare_shuttle2(h2o_req_t *);
 int lua_req_handler_ex(const char *, h2o_req_t *,
-	struct shuttle *, int, unsigned);
+	struct shuttle *, int, unsigned, int);
 void *get_router_data(struct shuttle *, unsigned *);
 void httpng_flush_requests_to_router(void);
 

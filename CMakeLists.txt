@@ -102,7 +102,7 @@ set(HTTPNG_SRC ${HTTPNG_C_SRC} ${HEADERS})
 
 build_module(httpng_c "${HTTPNG_SRC}")
 build_module(router "httpng/router.c")
-set_target_properties(router PROPERTIES OUTPUT_NAME ${CMAKE_CURRENT_BINARY_DIR}/httpng/router)
+set_target_properties(router PROPERTIES OUTPUT_NAME ${CMAKE_CURRENT_BINARY_DIR}/httpng/router_c)
 
 set(LIBS wslay xtm_api_static)
 

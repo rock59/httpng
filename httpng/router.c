@@ -281,14 +281,14 @@ req_handler(lua_h2o_handler_t *self, h2o_req_t *req)
 				return lua_req_handler_ex(self->path, req,
 					shuttle, entry->handler_ref,
 					router_data_len_max
-					- state.bytes_remain);
+					- state.bytes_remain, LUA_REFNIL);
 			if (is_error(result))
 				goto too_small_shuttle_size;
 		} else {
 		    if (path_only_len == entry->len &&
 			    !memcmp(path, entry + 1, path_only_len))
 			return lua_req_handler_ex(self->path, req, shuttle,
-				entry->handler_ref, 0);
+				entry->handler_ref, 0, LUA_REFNIL);
 		}
 		pos += (entry->len + sizeof(entry_header_t) * 2
 			- 1) / sizeof(entry_header_t) * sizeof(entry_header_t);
@@ -495,7 +495,7 @@ static const struct luaL_Reg mylib[] = {
 };
 
 int
-luaopen_httpng_router(lua_State *L)
+luaopen_httpng_router_c(lua_State *L)
 {
 	lua_createtable(L, 0, 1);
 	lua_pushcfunction(L, collect);

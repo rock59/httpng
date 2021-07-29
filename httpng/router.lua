@@ -2,6 +2,12 @@ local function is_valid_placeholder_name_char_relaxed(n)
     return (string.match(string.char(n), '[a-zA-Z0-9_]') ~= nil)
 end
 
+local function stash(stashes, pattern, name_offset, name_offset_after_last,
+        path, match_offset, match_offset_after_last)
+    stashes[string.sub(pattern, name_offset, name_offset_after_last)] =
+        string.sub(path, match_offset, match_offset_after_last)
+end
+
 local function check_match(req, v)
     local pattern = v.entry.path
     local path = req.path
@@ -9,13 +15,13 @@ local function check_match(req, v)
         return true
     end
 
+    local stashes = req._stashes
     local pattern_len1 = #pattern + 1
     local path_len1 = #path + 1
     local pattern_offset = 1
     local path_offset = 1
 
 ::again::
-
     local pattern_char = pattern:byte(pattern_offset)
     if (pattern_char == path:byte(path_offset)) then
             pattern_offset = pattern_offset + 1
@@ -32,7 +38,7 @@ local function check_match(req, v)
         end
         local match_offset = path_offset
         -- Determine placeholder name.
-        local name_offset
+        local name_offset = 1
         local is_wildcard
         if (pattern_char == string.byte('<')) then
                 pattern_offset = pattern_offset + 1
@@ -53,6 +59,7 @@ local function check_match(req, v)
                 end
         else
                 pattern_offset = pattern_offset + 1
+                name_offset = pattern_offset;
                 is_wildcard = (pattern_char == string.byte('*'))
         end
 
@@ -78,14 +85,16 @@ local function check_match(req, v)
     ::try_to_match_placeholder::
         if (is_wildcard) then
             if (pattern_offset >= pattern_len1) then
-                --Stash!
+                stash(stashes, pattern, name_offset, name_offset_after_last,
+                    path, match_offset, path_len1)
                 return true
             end
             -- Search for next pattern char.
             local pattern_char = pattern:byte(pattern_offset)
         ::another_iteration_for_pattern::
             if (path:byte(path_offset) == pattern_char) then
-                 --stash!
+                stash(stashes, pattern, name_offset, name_offset_after_last,
+                    path, match_offset, path_len1)
                 pattern_offset = pattern_offset + 1
                 path_offset = path_offset + 1
                 if (path_offset >= path_len1) then
@@ -109,13 +118,15 @@ local function check_match(req, v)
                         return false
                     end
 
-                    --stash!
+                    stash(stashes, pattern, name_offset,
+                        name_offset_after_last, path, match_offset, path_len1)
                     return true
                 end
 
                 path_offset = path_offset + 1
                 if (path_offset >= path_len1) then
-                    --stash!
+                    stash(stashes, pattern, name_offset, name_offset_after_last,
+                        path, match_offset, path_len1)
                     return true
                 end
 
@@ -128,7 +139,8 @@ local function check_match(req, v)
         ::another_iteration_for_pattern::
             local path_char = path:byte(path_offset)
             if (path_char == string.byte('/') or path_char == pattern_char) then
-                --stash!
+                stash(stashes, pattern, name_offset, name_offset_after_last,
+                    path, match_offset, path_len1)
                 goto done_with_pattern
             end
             path_offset = path_offset + 1
@@ -144,6 +156,7 @@ end
 
 local function handle(unused, req, io)
     local routes = req._used_router._routes
+    req._stashes = {}
     for _, v in pairs(routes) do
         if check_match(req, v) then
             return v.handler(req, io)

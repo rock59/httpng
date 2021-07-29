@@ -1919,6 +1919,30 @@ process_handler_success_not_ws_without_send(lua_State *L, shuttle_t *shuttle)
 	free_cancelled_lua_not_ws_shuttle_from_tx(shuttle);
 }
 
+/* Launched in TX thread */
+static int
+router_stash(lua_State *L)
+{
+	/* Lua parameters: self, name, [new_val]. */
+	enum {
+		LUA_STACK_IDX_SELF = 1,
+		LUA_STACK_IDX_NAME = 2,
+	};
+	const unsigned num_params = lua_gettop(L);
+	if (num_params < 2)
+		return luaL_error(L, "Not enough parameters");
+
+	lua_getfield(L, LUA_STACK_IDX_SELF, "_stashes");
+	if (!lua_istable(L, -1))
+		return luaL_error(L, "_stashes is not a table");
+
+	/* Push self._stashes[name]. */
+	lua_pushvalue(L, LUA_STACK_IDX_NAME);
+
+	lua_gettable(L, -2);
+	return 1;
+}
+
 /* Launched in TX thread. */
 static int
 lua_fiber_func(va_list ap)
@@ -1933,7 +1957,9 @@ lua_fiber_func(va_list ap)
 	lua_rawgeti(L, LUA_REGISTRYINDEX, response->un.req.lua_handler_ref);
 
 	/* First param for Lua handler - req. */
-	lua_createtable(L, 0, 14);
+	lua_createtable(L, 0, 15);
+	lua_pushcfunction(L, router_stash);
+	lua_setfield(L, -2, "stash");
 	lua_pushinteger(L, response->un.req.version_major);
 	lua_setfield(L, -2, "version_major");
 	lua_pushinteger(L, response->un.req.version_minor);

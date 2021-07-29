@@ -132,6 +132,7 @@ end
 local load_router_module = function()
     -- Check both ways to get router module.
     router_module = require 'httpng.router'
+    --router_module = require 'httpng.router_c'
     local router_module_alt = require 'httpng'.router
     return ((router_module == nil) == (router_module_alt == nil))
 end
@@ -562,6 +563,14 @@ end
 
 local bar_placeholder_handler = function(req, io)
     return { body = 'bar' }
+end
+
+local users_placeholder_handler = function(req, io)
+    local body = req:stash('user')
+    if (body == nil) then
+        body = 'no stash found'
+    end
+    return { body = body }
 end
 
 local version_handler_launched = false
@@ -1798,20 +1807,28 @@ g_good_handlers.test_router_placeholder_regular = function()
     local router = get_new_router()
     router:route({path = '/foo'}, foo_handler)
     router:route({path = '/:bar'}, bar_placeholder_handler)
+    router:route({path = '/users/:user'}, users_placeholder_handler)
 
     http.cfg{handler = router}
     check_site_content('', 'http', 'localhost:3300/foo', 'foo')
     check_site_content('', 'http', 'localhost:3300/bar', 'bar')
     check_site_content('', 'http', 'localhost:3300/stuff', 'bar')
+    check_site_content('', 'http', 'localhost:3300/users/one', 'one')
+    check_site_content('', 'http', 'localhost:3300/users/two', 'two')
+    check_site_content('', 'http', 'localhost:3300/users/two/more', 'not found')
 end
 
 g_good_handlers.test_router_placeholder_wildcard = function()
     local router = get_new_router()
     router:route({path = '/foo'}, foo_handler)
+    router:route({path = '/users/*user'}, users_placeholder_handler)
     router:route({path = '/*bar'}, bar_placeholder_handler)
 
     http.cfg{handler = router}
     check_site_content('', 'http', 'localhost:3300/foo', 'foo')
     check_site_content('', 'http', 'localhost:3300/bar', 'bar')
     check_site_content('', 'http', 'localhost:3300/stuff', 'bar')
+    check_site_content('', 'http', 'localhost:3300/users/one', 'one')
+    check_site_content('', 'http', 'localhost:3300/users/two', 'two')
+    check_site_content('', 'http', 'localhost:3300/users/two/more', 'two/more')
 end

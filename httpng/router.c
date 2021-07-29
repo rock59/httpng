@@ -96,7 +96,8 @@ check_placeholder_match(state_t *state, const char *pattern,
 			++pattern_offset;
 			++path_offset;
 			if (pattern_offset >= pattern_len)
-				return (path_offset >= path_len);
+				return (path_offset >= path_len) ? R_MATCH :
+					R_NOT_MATCH;
 			if (path_offset >= path_len)
 				return R_NOT_MATCH;
 		} else {

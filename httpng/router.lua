@@ -66,10 +66,12 @@ local function check_match(stashes, path, v)
         pattern_char = pattern:byte(pattern_offset)
         pattern_offset = pattern_offset + 1
         if (not is_valid_placeholder_name_char_relaxed(pattern_char)) then
+            pattern_offset = pattern_offset + 1
             if (pattern_char == string.byte('>')) then
-                pattern_offset = pattern_offset + 1
+                name_offset_after_last = pattern_offset - 3
+            else
+                name_offset_after_last = pattern_offset
             end
-            name_offset_after_last = pattern_offset
             goto try_to_match_placeholder
         end
 

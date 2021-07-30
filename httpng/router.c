@@ -137,7 +137,7 @@ check_placeholder_match(state_t *state, const char *pattern,
 				    pattern_char)) {
 					name_offset_after_last =
 						(pattern_char == '>') ?
-							pattern_offset++ :
+							pattern_offset++ - 1 :
 							pattern_offset;
 					break;
 				}

@@ -1871,12 +1871,70 @@ local test_router_placeholder_regular = function(use_c_router)
     check_site_content('', 'http', 'localhost:3300/users/two/more?query=0', 'not found')
 end
 
+local test_router_placeholder_regular_angle1 = function(use_c_router)
+    local router = get_new_router(use_c_router)
+    router:route({path = '/foo'}, foo_handler)
+    router:route({path = '/<:bar>'}, bar_placeholder_handler)
+    router:route({path = '/users/<:user>'}, users_placeholder_handler)
+
+    http.cfg{handler = router}
+    check_site_content('', 'http', 'localhost:3300/foo', 'foo')
+    check_site_content('', 'http', 'localhost:3300/bar', 'bar')
+    check_site_content('', 'http', 'localhost:3300/stuff', 'bar')
+    check_site_content('', 'http', 'localhost:3300/users/one', 'one')
+    check_site_content('', 'http', 'localhost:3300/users/two', 'two')
+    check_site_content('', 'http', 'localhost:3300/users/two/more', 'not found')
+    check_site_content('', 'http', 'localhost:3300/foo?query=0', 'foo')
+    check_site_content('', 'http', 'localhost:3300/bar?query=0', 'bar')
+    check_site_content('', 'http', 'localhost:3300/stuff?query=0', 'bar')
+    check_site_content('', 'http', 'localhost:3300/users/one?query=0', 'one')
+    check_site_content('', 'http', 'localhost:3300/users/two?query=0', 'two')
+    check_site_content('', 'http', 'localhost:3300/users/two/more?query=0', 'not found')
+end
+
+local test_router_placeholder_regular_angle2 = function(use_c_router)
+    local router = get_new_router(use_c_router)
+    router:route({path = '/foo'}, foo_handler)
+    router:route({path = '/<bar>'}, bar_placeholder_handler)
+    router:route({path = '/users/<user>'}, users_placeholder_handler)
+
+    http.cfg{handler = router}
+    check_site_content('', 'http', 'localhost:3300/foo', 'foo')
+    check_site_content('', 'http', 'localhost:3300/bar', 'bar')
+    check_site_content('', 'http', 'localhost:3300/stuff', 'bar')
+    check_site_content('', 'http', 'localhost:3300/users/one', 'one')
+    check_site_content('', 'http', 'localhost:3300/users/two', 'two')
+    check_site_content('', 'http', 'localhost:3300/users/two/more', 'not found')
+    check_site_content('', 'http', 'localhost:3300/foo?query=0', 'foo')
+    check_site_content('', 'http', 'localhost:3300/bar?query=0', 'bar')
+    check_site_content('', 'http', 'localhost:3300/stuff?query=0', 'bar')
+    check_site_content('', 'http', 'localhost:3300/users/one?query=0', 'one')
+    check_site_content('', 'http', 'localhost:3300/users/two?query=0', 'two')
+    check_site_content('', 'http', 'localhost:3300/users/two/more?query=0', 'not found')
+end
+
 g_good_handlers.test_router_placeholder_regular_lua = function()
     test_router_placeholder_regular()
 end
 
 g_good_handlers.test_router_placeholder_regular_c = function()
     test_router_placeholder_regular(true)
+end
+
+g_good_handlers.test_router_placeholder_regular_angle1_lua = function()
+    test_router_placeholder_regular_angle1()
+end
+
+g_good_handlers.test_router_placeholder_regular_angle1_c = function()
+    test_router_placeholder_regular_angle1(true)
+end
+
+g_good_handlers.test_router_placeholder_regular_angle2_lua = function()
+    test_router_placeholder_regular_angle2()
+end
+
+g_good_handlers.test_router_placeholder_regular_angle2_c = function()
+    test_router_placeholder_regular_angle2(true)
 end
 
 local test_router_placeholder_wildcard = function(use_c_router)
@@ -1900,12 +1958,41 @@ local test_router_placeholder_wildcard = function(use_c_router)
     check_site_content('', 'http', 'localhost:3300/users/two/more?query=0', 'two/more')
 end
 
+local test_router_placeholder_wildcard_angle = function(use_c_router)
+    local router = get_new_router(use_c_router)
+    router:route({path = '/foo'}, foo_handler)
+    router:route({path = '/users/<*user>'}, users_placeholder_handler)
+    router:route({path = '/<*bar>'}, bar_placeholder_handler)
+
+    http.cfg{handler = router}
+    check_site_content('', 'http', 'localhost:3300/foo', 'foo')
+    check_site_content('', 'http', 'localhost:3300/bar', 'bar')
+    check_site_content('', 'http', 'localhost:3300/stuff', 'bar')
+    check_site_content('', 'http', 'localhost:3300/users/one', 'one')
+    check_site_content('', 'http', 'localhost:3300/users/two', 'two')
+    check_site_content('', 'http', 'localhost:3300/users/two/more', 'two/more')
+    check_site_content('', 'http', 'localhost:3300/foo?query=0', 'foo')
+    check_site_content('', 'http', 'localhost:3300/bar?query=0', 'bar')
+    check_site_content('', 'http', 'localhost:3300/stuff?query=0', 'bar')
+    check_site_content('', 'http', 'localhost:3300/users/one?query=0', 'one')
+    check_site_content('', 'http', 'localhost:3300/users/two?query=0', 'two')
+    check_site_content('', 'http', 'localhost:3300/users/two/more?query=0', 'two/more')
+end
+
 g_good_handlers.test_router_placeholder_wildcard_lua = function()
     test_router_placeholder_wildcard()
 end
 
 g_good_handlers.test_router_placeholder_wildcard_c = function()
     test_router_placeholder_wildcard(true)
+end
+
+g_good_handlers.test_router_placeholder_wildcard_angle_lua = function()
+    test_router_placeholder_wildcard_angle()
+end
+
+g_good_handlers.test_router_placeholder_wildcard_angle_c = function()
+    test_router_placeholder_wildcard_angle(true)
 end
 
 local test_empty_response = function(handler, ver, use_tls)

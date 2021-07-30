@@ -385,18 +385,18 @@ end
 local httpng_lib = require 'httpng'
 local init_func = httpng_lib.cfg
 
-local lua_sites = {
-    {path = '/hello',       handler = hello_handler},
-    {path = '/large',       handler = large_handler},
-    {path = '/multi',       handler = multi_handler},
-    {path = '/req',         handler = req_handler},
-    {path = '/ws_server',   handler = ws_server_handler},
-    {path = '/ws_app',      handler = ws_app_handler},
-    {path = '/post_helper', handler = post_helper_handler},
-    {path = '/post_test',   handler = post_test_handler},
-    {path = '/put',         handler = put_handler},
-    {path = '/ip',          handler = ip_handler},
-}
+local router_module = httpng_lib.router
+local router = router_module.new()
+router:route({path = '/hello'}, hello_handler)
+router:route({path = '/large'}, large_handler)
+router:route({path = '/multi'}, multi_handler)
+router:route({path = '/req'}, req_handler)
+router:route({path = '/ws_server'}, ws_server_handler)
+router:route({path = '/ws_app'}, ws_app_handler)
+router:route({path = '/post_helper'}, post_helper_handler)
+router:route({path = '/post_test'}, post_test_handler)
+router:route({path = '/put'}, put_handler)
+router:route({path = '/ip'}, ip_handler)
 
 print '\n\n\nFilling in test spaces completed, launching HTTP server...\n\n'
 ::restart::
@@ -410,7 +410,7 @@ init_func({
         port = 7890,
         tls = { require 'examples.ssl_pairs'.foo },
     },
-    sites = lua_sites,
+    handler = router
 })
 
 fiber.sleep(10)

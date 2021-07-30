@@ -206,36 +206,10 @@ g_wrong_config.test_wrong_param_type = function()
         http.cfg, { threads = 'test' })
 end
 
-g_wrong_config.test_invalid_sites = function()
-    t.assert_error_msg_content_equals('sites is not a table',
-        http.cfg, { sites = 'test' })
-end
-
-g_wrong_config.test_invalid_sites_table = function()
-    t.assert_error_msg_content_equals('sites is not a table of tables',
-        http.cfg, { sites = { path = 42 } })
-end
-
-g_wrong_config.test_invalid_sites_path = function()
-    t.assert_error_msg_content_equals('sites[].path is not a string',
-        http.cfg, { sites = { { path = 42 } } })
-end
-
-g_wrong_config.test_sites_path_is_nil = function()
-    t.assert_error_msg_content_equals('sites[].path is nil',
-        http.cfg, { sites = { { } } })
-end
-
 g_wrong_config.test_handler_is_not_a_function = function()
     t.assert_error_msg_content_equals(
         'handler is not a function or table (router object)',
         http.cfg, { handler = 42 })
-end
-
-g_wrong_config.test_sites_handler_is_not_a_function = function()
-    t.assert_error_msg_content_equals(
-        'sites[].handler is not a function or string',
-        http.cfg, { sites = { { path = '/', handler = 42 }, } })
 end
 
 g_wrong_config.test_listen_port_invalid = function()
@@ -261,45 +235,6 @@ end
 g_wrong_config.test_level_invalid = function()
     t.assert_error_msg_content_equals('openssl_security_level is invalid',
         http.cfg, { handler = function() end, openssl_security_level = 6 })
-end
-
-g_wrong_config.test_many_roots = function()
-    t.assert_error_msg_content_equals('There can be only one "/"',
-        http.cfg, {
-            sites = {
-                { path = '/', handler = function() end },
-                { path = '/', handler = function() end },
-            }
-	})
-end
-
-g_wrong_config.test_many_roots_alt = function()
-    t.assert_error_msg_content_equals('There can be only one "/"',
-        http.cfg, {
-            sites = { { path = '/', handler = function() end } },
-            handler = function() end
-        }
-    )
-end
-
-g_wrong_config.test_paths_after_root = function()
-    t.assert_error_msg_content_equals('Can\'t add other paths after adding "/"',
-        http.cfg, {
-            sites = {
-                { path = '/', handler = function() end },
-                { path = '/alt', handler = function() end },
-            }
-	})
-end
-
-g_wrong_config.test_dup_paths = function()
-    t.assert_error_msg_content_equals("Can't add duplicate paths",
-        http.cfg, {
-            sites = {
-                { path = '/alt', handler = function() end },
-                { path = '/alt', handler = function() end },
-            }
-	})
 end
 
 g_shutdown = t.group('shutdown')
@@ -425,12 +360,10 @@ local listen_with_single_ssl_pair = {
 local function cfg_bad_handlers(use_tls)
     write_handler_launched = false
     write_header_handler_launched = false
-    local cfg = {
-        sites = {
-            { path = '/write', handler = write_handler },
-            { path = '/write_header', handler = write_header_handler },
-        },
-    }
+    local router = get_new_router()
+    router:route({path = '/write'}, write_handler)
+    router:route({path = '/write_header'}, write_header_handler)
+    local cfg = { handler = router }
     if (use_tls) then
         cfg.listen = listen_with_single_ssl_pair
     end
@@ -683,273 +616,6 @@ local cfg_for_two_sites = function(cfg, first, second, ver, use_tls)
     return proto, location_main, location_alt
 end
 
-local test_extra_sites = function(ver, use_tls)
-    local cfg = {
-        sites = { { path = '/alt', handler = foo_handler } },
-        threads = 4,
-    }
-    local proto, location_main, location_alt =
-        cfg_for_two_sites(cfg, '', 'alt', ver, use_tls)
-    check_site_content(ver, proto, location_main, 'not found')
-    check_site_content(ver, proto, location_alt, 'foo')
-
-    cfg.sites[#cfg.sites + 1] = { path = '/', handler = bar_handler }
-
-    cfg.listen = nil
-    my_http_cfg(cfg)
-    check_site_content(ver, proto, location_main, 'bar')
-    check_site_content(ver, proto, location_alt, 'foo')
-end
-
-g_hot_reload.test_extra_sites_http1_insecure = function()
-    test_extra_sites '--http1.1'
-end
-
-g_hot_reload.test_extra_sites_http1_tls = function()
-    test_extra_sites('--http1.1', true)
-end
-
-g_hot_reload.test_extra_sites_http2_insecure = function()
-    ensure_http2()
-    test_extra_sites '--http2'
-end
-
-g_hot_reload.test_extra_sites_http2_tls = function()
-    ensure_http2()
-    test_extra_sites('--http2', true)
-end
-
-local test_add_primary_handler = function(ver, use_tls)
-    local cfg = {
-        sites = { { path = '/alt', handler = foo_handler } },
-        threads = 4,
-    }
-    local proto, location_main, location_alt =
-        cfg_for_two_sites(cfg, '', 'alt', ver, use_tls)
-    check_site_content(ver, proto, location_main, 'not found')
-    check_site_content(ver, proto, location_alt, 'foo')
-
-    cfg.handler = bar_handler
-    cfg.listen = nil
-
-    my_http_cfg(cfg)
-    check_site_content(ver, proto, location_main, 'bar')
-    check_site_content(ver, proto, location_alt, 'foo')
-end
-
-g_hot_reload.test_add_primary_handler_http1_insecure = function()
-    test_add_primary_handler '--http1.1'
-end
-
-g_hot_reload.test_add_primary_handler_http1_tls = function()
-    test_add_primary_handler('--http1.1', true)
-end
-
-g_hot_reload.test_add_primary_handler_http2 = function()
-    ensure_http2()
-    test_add_primary_handler '--http2'
-end
-
-local test_add_intermediate_site = function(ver, use_tls)
-    local cfg = {
-        handler = foo_handler,
-        threads = 4,
-    }
-    local proto, location_main, location_alt =
-        cfg_for_two_sites(cfg, '', 'alt', ver, use_tls)
-    check_site_content(ver, proto, location_main, 'foo')
-    check_site_content(ver, proto, location_alt, 'foo')
-
-    cfg.sites = {}
-    cfg.sites[#cfg.sites + 1] = { path = '/alt', handler = bar_handler }
-    cfg.listen = nil
-
-    my_http_cfg(cfg)
-    check_site_content(ver, proto, location_main, 'foo')
-    check_site_content(ver, proto, location_alt, 'bar')
-end
-
-g_hot_reload.test_add_intermediate_site_http1_insecure = function()
-    test_add_intermediate_site '--http1.1'
-end
-
-g_hot_reload.test_add_intermediate_site_http1_tls = function()
-    test_add_intermediate_site('--http1.1', true)
-end
-
-g_hot_reload.test_add_intermediate_site_http2 = function()
-    ensure_http2()
-    test_add_intermediate_site '--http2'
-end
-
-local test_add_intermediate_site_alt = function(ver, use_tls)
-    local cfg = {
-        sites = { { path = '/', handler = foo_handler } },
-        threads = 4,
-    }
-    local proto, location_main, location_alt =
-        cfg_for_two_sites(cfg, '', 'alt', ver, use_tls)
-    check_site_content(ver, proto, location_main, 'foo')
-    check_site_content(ver, proto, location_alt, 'foo')
-
-    cfg.sites[#cfg.sites + 1] = { path = '/alt', handler = bar_handler }
-    cfg.listen = nil
-
-    my_http_cfg(cfg)
-    check_site_content(ver, proto, location_main, 'foo')
-    check_site_content(ver, proto, location_alt, 'bar')
-end
-
-g_hot_reload.test_add_intermediate_site_alt_http1_insecure = function()
-    test_add_intermediate_site_alt '--http1.1'
-end
-
-g_hot_reload.test_add_intermediate_site_alt_http1_tls = function()
-    test_add_intermediate_site_alt('--http1.1', true)
-end
-
-g_hot_reload.test_add_intermediate_site_alt_http2 = function()
-    ensure_http2()
-    test_add_intermediate_site_alt '--http2'
-end
-
-local test_add_duplicate_paths = function(ver, use_tls)
-    local cfg = {
-        sites = { { path = '/foo', handler = foo_handler } },
-        threads = 4,
-    }
-    local proto, location_main, location_alt =
-        cfg_for_two_sites(cfg, 'foo', 'bar', ver, use_tls)
-    check_site_content(ver, proto, location_main, 'foo')
-    check_site_content(ver, proto, location_alt, 'not found')
-
-    cfg.sites[#cfg.sites + 1] = { path = '/bar', handler = bar_handler }
-    cfg.sites[#cfg.sites + 1] = { path = '/bar', handler = bar_handler }
-
-    t.assert_error_msg_content_equals("Can't add duplicate paths",
-        http.cfg, cfg)
-    if not using_popen() then fiber.sleep(0.1) end
-    check_site_content(ver, proto, location_main, 'foo')
-    check_site_content(ver, proto, location_alt, 'not found')
-end
-
-g_hot_reload.test_add_duplicate_paths_http1_insecure = function()
-    test_add_duplicate_paths '--http1.1'
-end
-
-g_hot_reload.test_add_duplicate_paths_http1_tls = function()
-    test_add_duplicate_paths('--http1.1', true)
-end
-
-g_hot_reload.test_add_duplicate_paths_http2_insecure = function()
-    ensure_http2()
-    test_add_duplicate_paths '--http2'
-end
-
-g_hot_reload.test_add_duplicate_paths_http2_tls = function()
-    ensure_http2()
-    test_add_duplicate_paths('--http2', true)
-end
-
-local test_add_duplicate_paths_alt = function(ver, use_tls)
-    local cfg = {
-        sites = { { path = '/', handler = foo_handler } },
-        threads = 4,
-    }
-    local proto, location_main, location_alt =
-        cfg_for_two_sites(cfg, '', 'alt', ver, use_tls)
-    check_site_content(ver, proto, location_main, 'foo')
-    check_site_content(ver, proto, location_alt, 'foo')
-
-    cfg.sites[#cfg.sites + 1] = { path = '/alt', handler = bar_handler }
-    cfg.sites[#cfg.sites + 1] = { path = '/alt', handler = bar_handler }
-
-    t.assert_error_msg_content_equals("Can't add duplicate paths",
-        http.cfg, cfg)
-    if not using_popen() then fiber.sleep(0.1) end
-
-    check_site_content(ver, proto, location_main, 'foo')
-    check_site_content(ver, proto, location_alt, 'foo')
-end
-
-g_hot_reload.test_add_duplicate_paths_alt_http1_insecure = function()
-    test_add_duplicate_paths_alt '--http1.1'
-end
-
-g_hot_reload.test_add_duplicate_paths_alt_http1_tls = function()
-    test_add_duplicate_paths_alt('--http1.1', true)
-end
-
-g_hot_reload.test_add_duplicate_paths_alt_http2 = function()
-    ensure_http2()
-    test_add_duplicate_paths_alt '--http2'
-end
-
-local test_remove_path = function(ver, use_tls)
-    local cfg = {
-        sites = {
-            { path = '/foo', handler = foo_handler },
-            { path = '/bar', handler = bar_handler },
-        },
-        threads = 4,
-    }
-    local proto, location_main, location_alt =
-        cfg_for_two_sites(cfg, 'foo', 'bar', ver, use_tls)
-    check_site_content(ver, proto, location_main, 'foo')
-    check_site_content(ver, proto, location_alt, 'bar')
-
-    cfg.sites[#cfg.sites] = nil
-    cfg.listen = nil
-
-    my_http_cfg(cfg)
-    check_site_content(ver, proto, location_main, 'foo')
-    check_site_content(ver, proto, location_alt, 'not found')
-end
-
-g_hot_reload.test_remove_path_http1_insecure = function()
-    test_remove_path '--http1.1'
-end
-
-g_hot_reload.test_remove_path_http1_tls = function()
-    test_remove_path('--http1.1', true)
-end
-
-g_hot_reload.test_remove_path_http2 = function()
-    ensure_http2()
-    test_remove_path '--http2'
-end
-
-local test_remove_all_paths = function(ver, use_tls)
-    local cfg = {
-        sites = {
-            { path = '/', handler = foo_handler },
-        },
-        threads = 4,
-    }
-    local proto, location_main, location_alt =
-        cfg_for_two_sites(cfg, '', 'bar', ver, use_tls)
-    check_site_content(ver, proto, location_main, 'foo')
-
-    cfg.sites = nil
-    cfg.listen = nil
-
-    my_http_cfg(cfg)
-    check_site_content(ver, proto, location_main, 'not found')
-end
-
-g_hot_reload.test_remove_all_paths_http1_insecure = function()
-    test_remove_all_paths '--http1.1'
-end
-
-g_hot_reload.test_remove_all_paths_http1_tls = function()
-    test_remove_all_paths('--http1.1', true)
-end
-
-g_hot_reload.test_remove_all_paths_http2 = function()
-    ensure_http2()
-    test_remove_all_paths '--http2'
-end
-
 local test_remove_all_paths_alt = function(ver, use_tls)
     local cfg = {
         handler = foo_handler,
@@ -981,7 +647,7 @@ end
 
 g_hot_reload.test_change_params = function()
     local cfg = {
-        sites = { { path = '/write', handler = write_handler } },
+        handler = write_handler,
         threads = 4,
         max_conn_per_thread = 64,
         shuttle_size = 1024,
@@ -1292,9 +958,12 @@ local alt_bar_handler = function(req, io)
 end
 
 local test_replace_handlers = function(ver, use_tls)
+    local router = get_new_router()
+    router:route({path = '/alt'}, alt_foo_handler)
+    router:route({path = '/'}, foo_handler)
+
     local cfg = {
-        handler = foo_handler,
-        sites = { { path = '/alt', handler = alt_foo_handler } },
+        handler = router,
         threads = 4,
     }
     local proto, location_main, location_alt =
@@ -1303,14 +972,21 @@ local test_replace_handlers = function(ver, use_tls)
     check_site_content(ver, proto, location_main, 'foo')
     check_site_content(ver, proto, location_alt, 'FOO')
 
-    cfg.handler = bar_handler
-    cfg.sites[1].handler = alt_bar_handler
+    local router = get_new_router()
+    router:route({path = '/alt'}, alt_bar_handler)
+    router:route({path = '/'}, bar_handler)
+
+    cfg.handler = router
     cfg.listen = nil
     my_http_cfg(cfg)
 
     check_site_content(ver, proto, location_main, 'bar')
     check_site_content(ver, proto, location_alt, 'BAR')
 end
+
+--[[
+
+--Should finish router support first.
 
 g_hot_reload.test_replace_handlers_http1_insecure = function()
     test_replace_handlers '--http1.1'
@@ -1329,6 +1005,7 @@ g_hot_reload.test_replace_handlers_http2_tls = function()
     ensure_http2()
     test_replace_handlers('--http2', true)
 end
+--]]
 
 g_hot_reload.test_force_decrease_threads = function()
     t.assert_error_msg_content_equals(
@@ -1456,20 +1133,6 @@ g_wrong_config.test_combo3 = function()
     http._cfg_debug{inject_shutdown_error = true}
     pcall(g_shutdown.test_simple_shutdown)
     pcall(g_wrong_config.test_no_handlers)
-    pcall(g_wrong_config.test_sites_handler_is_not_a_function)
-    http._cfg_debug{inject_shutdown_error = false}
-    http.shutdown()
-    shutdown_works = true
-end
-
-g_wrong_config.test_combo4 = function()
-    -- ASAN failure on broken versions.
-    http._cfg_debug{inject_shutdown_error = true}
-    pcall(g_shutdown.test_simple_shutdown)
-    pcall(g_wrong_config.test_no_handlers)
-    pcall(g_wrong_config.test_listen_port_root)
-    pcall(g_wrong_config.test_many_roots_alt)
-    pcall(g_wrong_config.test_paths_after_root)
     http._cfg_debug{inject_shutdown_error = false}
     http.shutdown()
     shutdown_works = true
@@ -1479,9 +1142,7 @@ g_wrong_config.test_combo5 = function()
     -- ASAN failure on broken versions.
     http._cfg_debug{inject_shutdown_error = true}
     pcall(g_shutdown.test_simple_shutdown)
-    pcall(g_wrong_config.test_invalid_sites)
     pcall(g_wrong_config.test_handler_is_not_a_function)
-    pcall(g_wrong_config.test_sites_handler_is_not_a_function)
     http._cfg_debug{inject_shutdown_error = false}
     http.shutdown()
     shutdown_works = true

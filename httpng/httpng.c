@@ -390,7 +390,6 @@ static struct {
 	volatile unsigned add_new_sites_counter;
 	int tfo_queues;
 	int on_shutdown_ref;
-	int idx_of_root_site; /* ...in lua_sites; < 0 means none. */
 	unsigned char reaping_flags;
 #ifdef SPLIT_LARGE_BODY
 	bool use_body_split;
@@ -407,7 +406,6 @@ static struct {
 } conf = {
 	.tfo_queues = H2O_DEFAULT_LENGTH_TCP_FASTOPEN_QUEUE,
 	.on_shutdown_ref = LUA_REFNIL,
-	.idx_of_root_site = -1,
 };
 
 __thread thread_ctx_t *curr_thread_ctx;
@@ -2413,25 +2411,6 @@ register_router_part_two(h2o_hostconf_t *hostconf,
 		thread_idx, handler, handler_param, router_ref);
 }
 
-/* Can be launched in TX thread or HTTP server thread.
- * *real_path content is copied inside libh2o, we do NOT
- * use saved *real_path (it is just "not NULL" flag)
- * except in hot reload where it is treated specifically. */
-static h2o_pathconf_t *
-register_file_handler_part_two(h2o_hostconf_t *hostconf,
-	lua_site_t *lua_site, unsigned thread_idx, const char *real_path)
-{
-	/* These functions never return NULL, dying instead */
-	h2o_pathconf_t *const pathconf =
-		h2o_config_register_path(hostconf, lua_site->path, 0);
-	h2o_file_handler_t *const handler =
-		h2o_file_register(pathconf, real_path,
-		/* index_files */ NULL, /* mimemap */ NULL, /* flags */ 0);
-	lua_site->lua_handlers[thread_idx] = (lua_h2o_handler_t *)handler;
-	lua_site->real_path = real_path;
-	return pathconf;
-}
-
 /* Launched in TX thread. */
 static void
 register_lua_handler(lua_site_t *lua_site,
@@ -2527,25 +2506,6 @@ register_router(lua_State *L, lua_site_t *lua_site, const char *path,
 			.hostconf, lua_site, thread_idx, user_handler,
 			user_handler_param, LUA_REFNIL);
 	return 0;
-}
-
-/* Launched in TX thread. */
-static inline void
-register_file_handler_part_one(lua_site_t *lua_site, const char *path)
-{
-	register_lua_handler_part_one(lua_site, path, LUA_REFNIL);
-}
-
-/* Launched in TX thread. */
-static void
-register_file_handler(lua_site_t *lua_site, const char *path,
-	const char *real_path)
-{
-	register_file_handler_part_one(lua_site, path);
-	unsigned thread_idx;
-	for (thread_idx = 0; thread_idx < MAX_threads; ++thread_idx)
-		register_file_handler_part_two(conf.thread_ctxs[thread_idx]
-			.hostconf, lua_site, thread_idx, real_path);
 }
 
 /* Launched in HTTP server thread. */
@@ -4171,7 +4131,6 @@ on_shutdown_internal(lua_State *L, bool called_from_callback)
 	}
 	free(conf.lua_sites);
 	conf.configured = false;
-	conf.idx_of_root_site = -1;
 	conf.fill_router_data = NULL;
 	complain_loudly_about_leaked_fds();
 	conf.is_shutdown_in_progress = false;
@@ -4395,10 +4354,6 @@ hot_reload_add_remove_sites_in_some_thr(thread_ctx_t *thread_ctx,
 			continue;
 		}
 		h2o_pathconf_t *const pathconf =
-			(lua_site->real_path != NULL) ?
-			register_file_handler_part_two(thread_ctx->hostconf,
-				lua_site, thread_ctx->idx,
-				lua_site->real_path) :
 			register_lua_handler_part_two(thread_ctx->hostconf,
 				lua_site, thread_ctx->idx);
 		if (!is_tx_thread)
@@ -4682,7 +4637,6 @@ int cfg(lua_State *L)
 	} else
 		is_hot_reload = false;
 	unsigned c_handlers = 0;
-	const int prev_idx_of_root_site = conf.idx_of_root_site;
 
 	if (lua_gettop(L) < 1) {
 		lerr = "No parameters specified";
@@ -4848,208 +4802,9 @@ Skip_inits_on_hot_reload:
 	;
 	lua_site_t *lua_sites = NULL;
 	unsigned hot_reload_extra_sites = 0;
-	lua_getfield(L, LUA_STACK_IDX_TABLE, "sites");
 	unsigned lua_site_count = 0;
 	const unsigned generation = (conf.generation += GENERATION_INCREMENT);
-	if (lua_isnil(L, -1))
-		goto Skip_lua_sites;
-	if (!lua_istable(L, -1)) {
-		lerr = "sites is not a table";
-		goto invalid_sites_table;
-	}
-	lua_pushnil(L); /* Start of table. */
-	while (lua_next(L, LUA_STACK_IDX_LUA_SITES)) {
-		bool is_adding_site = false;
-		if (!lua_istable(L, -1)) {
-			lerr = "sites is not a table of tables";
-			goto invalid_sites;
-		}
-		lua_getfield(L, -1, "path");
-		if (lua_isnil(L, -1)) {
-			lerr = "sites[].path is nil";
-			goto invalid_sites;
-		}
-		if (!lua_isstring_strict(L, -1)) {
-			/* Numbers are converted automatically,
-			 * we do not want that. */
-			lerr = "sites[].path is not a string";
-			goto invalid_sites;
-		}
-		size_t path_len;
-		const char *const path = lua_tolstring(L, -1, &path_len);
-		if (path == NULL) {
-			lerr = "sites[].path is not a string";
-			goto invalid_sites;
-		}
 
-		lua_site_t *lua_site;
-		unsigned lua_site_idx;
-		if (is_hot_reload) {
-			for (lua_site_idx = 0;
-			    lua_site_idx < conf.lua_site_count;
-			    ++lua_site_idx) {
-				lua_site = &conf.lua_sites[lua_site_idx];
-				if (path_len == lua_site->path_len &&
-				    !memcmp(lua_site->path, path, path_len)) {
-					if (is_site_added(lua_site, generation)) {
-						lerr =
-						"Can't add duplicate paths";
-						goto invalid_sites;
-					}
-					goto Skip_creating_sites_structs;
-				}
-			}
-			for (; lua_site_idx < conf.lua_site_count +
-			    hot_reload_extra_sites; ++lua_site_idx) {
-				const lua_site_t *const lua_site =
-					&conf.lua_sites[lua_site_idx];
-				if (path_len == lua_site->path_len &&
-				    !memcmp(lua_site->path, path, path_len)) {
-					lerr = "Can't add duplicate paths";
-					goto invalid_sites;
-				}
-			}
-			lua_site_t *const new_lua_sites =
-				(lua_site_t *)realloc(conf.lua_sites,
-					sizeof(lua_site_t) *
-					(conf.lua_site_count +
-						hot_reload_extra_sites + 1));
-			if (new_lua_sites == NULL)
-				goto error_lua_sites_malloc;
-			conf.lua_sites = new_lua_sites;
-			const int created_entry_idx = conf.lua_site_count +
-                                hot_reload_extra_sites++;
-			lua_site = &conf.lua_sites[created_entry_idx];
-			lua_site->generation =
-				generation - ADD_NEW_SITE_GENERATION_SHIFT;
-			if (conf.idx_of_root_site >= 0) {
-				/* Swap entries. */
-				lua_site_t *const old_root =
-					&conf.lua_sites[conf.idx_of_root_site];
-				const lua_site_t tmp = *old_root;
-				*old_root = *lua_site;
-				*lua_site = tmp;
-				lua_site = old_root;
-				conf.idx_of_root_site = created_entry_idx;
-			} else if (path_len == 1 && *path == '/')
-				conf.idx_of_root_site = created_entry_idx;
-			is_adding_site = true;
-			goto Alloc_lua_site_path;
-		}
-
-		if (path_len == 1 && *path == '/') {
-			if (conf.idx_of_root_site >= 0) {
-				lerr = "There can be only one \"/\"";
-				goto invalid_sites;
-			}
-			conf.idx_of_root_site = lua_site_count;
-		} else if (conf.idx_of_root_site >= 0) {
-			/* FIXME: Move root instead? */
-			lerr = "Can't add other paths after adding \"/\"";
-			goto invalid_sites;
-		} else {
-			for (lua_site_idx = 0;
-			    lua_site_idx < lua_site_count;
-			    ++lua_site_idx) {
-				const lua_site_t *const lua_site =
-					&lua_sites[lua_site_idx];
-				if (path_len == lua_site->path_len &&
-				    !memcmp(lua_site->path, path, path_len)) {
-					lerr = "Can't add duplicate paths";
-					goto invalid_sites;
-				}
-			}
-		}
-		lua_site_t *const new_lua_sites =
-			(lua_site_t *)realloc(lua_sites, sizeof(lua_site_t) *
-				(lua_site_count + 1));
-		if (new_lua_sites == NULL) {
-		error_lua_sites_malloc:
-			lerr = "Failed to allocate memory "
-				"for Lua sites C array";
-			goto invalid_sites;
-		}
-		lua_sites = new_lua_sites;
-		lua_site = &lua_sites[lua_site_count++];
-
-	Alloc_lua_site_path:
-		lua_site->lua_handler_ref = LUA_REFNIL;
-		if ((lua_site->path = (char *)malloc(path_len + 1)) == NULL) {
-			lerr = "Failed to allocate memory "
-				"for Lua sites C array path";
-			goto invalid_sites;
-		}
-		lua_site->path_len = path_len;
-
-	Skip_creating_sites_structs:
-		lua_getfield(L, -2, "handler");
-		if (lua_type(L, -1) != LUA_TFUNCTION &&
-		    !lua_isstring_strict(L, -1)) {
-			lerr = "sites[].handler is not a function or string";
-			goto invalid_sites;
-		}
-
-		if (is_hot_reload) {
-			if (is_adding_site) {
-				if (lua_isstring_strict(L, -1)) {
-					register_file_handler_part_one(
-						lua_site, path);
-					size_t len;
-					lua_site->real_path =
-						lua_tolstring(L, -1, &len);
-					/* Hacky: we rely of string buffer not
-					 * being collected until return
-					 * from cfg(). */
-					lua_pop(L, 1);
-				} else
-					register_lua_handler_part_one(lua_site,
-						path, luaL_ref(L,
-							LUA_REGISTRYINDEX));
-			} else {
-				if (lua_site->generation == generation) {
-					lerr = "duplicated site description";
-					goto invalid_sites;
-				}
-				if (lua_isstring_strict(L, -1)) {
-					if (lua_site->real_path == NULL) {
-	lerr = "replacing Lua handler with file handler is not supported";
-						goto invalid_sites;
-					}
-					size_t len;
-					lua_site->real_path =
-						lua_tolstring(L, -1, &len);
-					/* Hacky: we rely of string buffer not
-					 * being collected until return
-					 * from cfg(). */
-					lua_pop(L, 1);
-				} else {
-					if (lua_site->real_path != NULL) {
-	lerr = "replacing file handler with Lua handler is not supported";
-						goto invalid_sites;
-					}
-					lua_site->new_lua_handler_ref =
-						luaL_ref(L, LUA_REGISTRYINDEX);
-				}
-				lua_site->generation = generation;
-			}
-		} else {
-			if (lua_isstring_strict(L, -1)) {
-				size_t len;
-				register_file_handler(lua_site, path,
-					lua_tolstring(L, -1, &len));
-				lua_pop(L, 1);
-			} else
-				register_lua_handler(lua_site, path,
-					luaL_ref(L, LUA_REGISTRYINDEX));
-			lua_site->generation = generation;
-		}
-
-		/* Remove path string and site array value,
-		 * keep key for next iteration. */
-		lua_pop(L, 2);
-	}
-
-Skip_lua_sites:
 	lua_getfield(L, LUA_STACK_IDX_TABLE, "handler");
 	if (lua_isnil(L, -1))
 		goto Skip_main_lua_handler;
@@ -5060,39 +4815,7 @@ Skip_lua_sites:
 	}
 
 	if (is_hot_reload) {
-		if (conf.idx_of_root_site >= 0)
-			goto Primary_handler_found;
-
-		lua_site_t *const new_lua_sites =
-			(lua_site_t *)realloc(conf.lua_sites,
-				sizeof(lua_site_t) * (conf.lua_site_count +
-					hot_reload_extra_sites + 1));
-		if (new_lua_sites == NULL)
-			goto error_lua_primary_site_malloc;
-		conf.lua_sites = new_lua_sites;
-		const unsigned new_root_idx = conf.lua_site_count +
-			hot_reload_extra_sites++;
-		lua_site_t *lua_site = &conf.lua_sites[new_root_idx];
-		lua_site->generation =
-			generation - ADD_NEW_SITE_GENERATION_SHIFT;
-
-		lua_site->lua_handler_ref = LUA_REFNIL;
-		if ((lua_site->path = (char *)malloc(1 + 1)) == NULL)
-			goto error_lua_primary_site_path_malloc;
-		lua_site->path_len = 1;
-		conf.idx_of_root_site = new_root_idx;
-		if (lua_type(L, -1) == LUA_TFUNCTION)
-			register_lua_handler_part_one(lua_site,
-				"/", luaL_ref(L, LUA_REGISTRYINDEX));
-		else {
-			lerr =
-			"Reconfiguring with router is not supported (yet ?)";
-			goto invalid_handler;
-		}
-		goto Skip_creating_primary_handler_structs;
-
-	Primary_handler_found:
-		lua_site = &conf.lua_sites[conf.idx_of_root_site];
+		lua_site_t *const lua_site = &conf.lua_sites[0];
 		if (lua_site->generation == generation) {
 			lerr = "duplicated site description for /";
 			goto invalid_sites;
@@ -5117,16 +4840,9 @@ Skip_lua_sites:
 		goto Skip_creating_primary_handler_structs;
 	}
 
-	if (conf.idx_of_root_site >= 0) {
-		lerr = "There can be only one \"/\"";
-		goto invalid_handler;
-	}
-	conf.idx_of_root_site = lua_site_count;
-
 	lua_site_t *const new_lua_sites = (lua_site_t *)realloc(lua_sites,
 		sizeof(lua_site_t) * (lua_site_count + 1));
 	if (new_lua_sites == NULL) {
-	error_lua_primary_site_malloc:
 		lerr = "Failed to allocate memory for Lua sites C array";
 		goto invalid_handler;
 	}
@@ -5134,7 +4850,6 @@ Skip_lua_sites:
 	lua_site_t *const lua_site = &lua_sites[lua_site_count++];
 	lua_site->lua_handler_ref = LUA_REFNIL;
 	if ((lua_site->path = (char *)malloc(1 + 1)) == NULL) {
-	error_lua_primary_site_path_malloc:
 		lerr = "Failed to allocate memory for Lua sites C array path";
 		goto invalid_handler;
 	}
@@ -5378,20 +5093,12 @@ Apply_new_config_hot_reload:
 	    removed_sites;) {
 		lua_site_t *const lua_site = &conf.lua_sites[idx];
 		if (is_site_obsoleted(lua_site, generation)) {
-			if (conf.idx_of_root_site == idx)
-				conf.idx_of_root_site = -1;
 			free(lua_site->path);
 			luaL_unref(L, LUA_REGISTRYINDEX,
 				lua_site->lua_handler_ref);
 			memmove(lua_site, lua_site + 1, (conf.lua_site_count
 				+ hot_reload_extra_sites - ++removed_sites
 				- idx) * sizeof(*lua_site));
-			if (conf.idx_of_root_site >= 0) {
-				if (conf.idx_of_root_site > idx)
-					--conf.idx_of_root_site;
-				else if (conf.idx_of_root_site == idx)
-					conf.idx_of_root_site = -1;
-			}
 		} else
 			++idx;
 	}
@@ -5478,18 +5185,6 @@ failed_to_add_threads:
 invalid_handler:
 invalid_sites:
 	if (is_hot_reload) {
-		if (prev_idx_of_root_site != conf.idx_of_root_site) {
-			assert(conf.idx_of_root_site >= conf.lua_site_count);
-			if (prev_idx_of_root_site >= 0) {
-				/* Move root site back. */
-				const lua_site_t tmp =
-					conf.lua_sites[conf.idx_of_root_site];
-				conf.lua_sites[conf.idx_of_root_site] =
-					conf.lua_sites[prev_idx_of_root_site];
-				conf.lua_sites[prev_idx_of_root_site] = tmp;
-			}
-			conf.idx_of_root_site = prev_idx_of_root_site;
-		}
 		for (idx = 0; idx < conf.lua_site_count +
 		    hot_reload_extra_sites; ++idx) {
 			lua_site_t *const lua_site = &conf.lua_sites[idx];
@@ -5528,7 +5223,6 @@ invalid_sites:
 		free(lua_site->path);
 	}
 	free(lua_sites);
-invalid_sites_table:
 c_desc_empty:
 register_host_failed:
 	/* N.b.: h2o currently can't "unregister" host(s). */
@@ -5547,11 +5241,6 @@ error_c_sites_func_failed:
 error_c_sites_func_not_a_function:
 error_hot_reload_c:
 error_no_parameters:
-	if (prev_idx_of_root_site != conf.idx_of_root_site) {
-		assert(!is_hot_reload);
-		assert(prev_idx_of_root_site < 0);
-		conf.idx_of_root_site = -1;
-	}
 	assert(lerr != NULL);
 	conf.hot_reload_in_progress = false;
 error_something:

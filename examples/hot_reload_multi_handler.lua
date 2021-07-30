@@ -66,19 +66,22 @@ local config = {
 
 ::again::
 
+local router_module = http.router
 print 'Using foo..'
-config.handler = foo_handler;
-config.sites = {
-    {path = '/subdir',       handler = alt_foo_handler},
-}
+
+local router = router_module.new()
+router:route({path = '/subdir'}, alt_foo_handler)
+router:route({path = '/'}, foo_handler)
+config.handler = router
 http.cfg(config)
 fiber.sleep(0.1)
 
 print 'Using bar..'
-config.sites = {
-    {path = '/subdir',       handler = alt_bar_handler},
-}
-config.handler = bar_handler;
+local router = router_module.new()
+router:route({path = '/subdir'}, alt_bar_handler)
+router:route({path = '/'}, bar_handler)
+config.handler = router
+config.listen = nil
 http.cfg(config)
 
 fiber.sleep(0.1)

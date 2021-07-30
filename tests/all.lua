@@ -521,6 +521,10 @@ local empty_handler3 = function(req, io)
     return {body = ''}
 end
 
+local post_handler = function(req, io)
+    return { body = req.body }
+end
+
 local version_handler_launched = false
 local received_http1_req = false
 local received_http2_req = false
@@ -536,7 +540,7 @@ local check_http_version_handler = function(req, io)
     return {body = 'foo'}
 end
 
-local check_site_content = function(ver, proto, location, str, timeout)
+local check_site_content = function(extra, proto, location, str, timeout)
     ensure_popen()
     local target
     if using_popen() then
@@ -550,7 +554,7 @@ local check_site_content = function(ver, proto, location, str, timeout)
     else
         timeout_str = ''
     end
-    local cmd = curl_bin .. ' -k -s ' .. timeout_str .. ver .. target ..
+    local cmd = curl_bin .. ' -k -s ' .. timeout_str .. extra .. target ..
         proto .. '://' .. location
     local output
     if using_popen() then
@@ -1715,4 +1719,36 @@ end
 
 g_good_handlers.test_empty_response3_http2_tls = function()
     test_empty_response(empty_handler3, '--http2', true)
+end
+
+local test_post = function(ver, use_tls)
+    local cfg = {handler = post_handler}
+    local proto
+    if (use_tls) then
+        cfg.listen = listen_with_single_ssl_pair
+        proto = 'https'
+    else
+        proto = 'http'
+    end
+    http.cfg(cfg)
+
+    local test = 'The Matrix has you'
+    check_site_content(ver .. ' -d "' .. test .. '" ', proto,
+        'localhost:3300', test)
+end
+
+g_good_handlers.test_post_http1_tls = function()
+    test_post('--http2', true)
+end
+
+g_good_handlers.test_post_http2_tls = function()
+    test_post('--http1.1', true)
+end
+
+g_good_handlers.test_post_http1_insecure = function()
+    test_post('--http2')
+end
+
+g_good_handlers.test_post_http2_insecure = function()
+    test_post('--http1.1')
 end

@@ -1546,15 +1546,14 @@ fill_received_headers_and_body(lua_State *L, shuttle_t *shuttle)
 {
 	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
 	assert(!response->sent_something);
+	unsigned current_offset = response->un.req.router_data_len +
+		response->un.req.path_len + response->un.req.authority_len;
 	const received_http_header_handle_t *const handles =
 		(received_http_header_handle_t *)&response->un.req.buffer[
-			response->un.req.router_data_len +
-			response->un.req.path_len +
-				response->un.req.authority_len];
+		current_offset];
 	const unsigned num_headers = response->un.req.num_headers;
 	lua_createtable(L, 0, num_headers);
-	unsigned current_offset = response->un.req.path_len + num_headers *
-		sizeof(received_http_header_handle_t);
+	current_offset += num_headers * sizeof(received_http_header_handle_t);
 	unsigned header_idx;
 	for (header_idx = 0; header_idx < num_headers; ++header_idx) {
 		const received_http_header_handle_t *const handle =

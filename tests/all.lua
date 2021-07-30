@@ -573,6 +573,17 @@ local users_placeholder_handler = function(req, io)
     return { body = body }
 end
 
+local empty_handler1 = function(req, io)
+end
+
+local empty_handler2 = function(req, io)
+    return {}
+end
+
+local empty_handler3 = function(req, io)
+    return {body = ''}
+end
+
 local version_handler_launched = false
 local received_http1_req = false
 local received_http2_req = false
@@ -588,7 +599,7 @@ local check_http_version_handler = function(req, io)
     return {body = 'foo'}
 end
 
-local check_site_content = function(ver, proto, location, str)
+local check_site_content = function(ver, proto, location, str, timeout)
     ensure_popen()
     local target
     if using_popen() then
@@ -596,7 +607,13 @@ local check_site_content = function(ver, proto, location, str)
     else
         target = ' -o tmp_curl.txt '
     end
-    local cmd = curl_bin .. ' -k -s ' .. ver .. target ..
+    local timeout_str
+    if timeout ~= nil then
+        timeout_str = '-m ' .. timeout .. ' '
+    else
+        timeout_str = ''
+    end
+    local cmd = curl_bin .. ' -k -s ' .. timeout_str .. ver .. target ..
         proto .. '://' .. location
     local output
     if using_popen() then
@@ -1831,4 +1848,65 @@ g_good_handlers.test_router_placeholder_wildcard = function()
     check_site_content('', 'http', 'localhost:3300/users/one', 'one')
     check_site_content('', 'http', 'localhost:3300/users/two', 'two')
     check_site_content('', 'http', 'localhost:3300/users/two/more', 'two/more')
+end
+
+local test_empty_response = function(handler, ver, use_tls)
+    local cfg = {handler = handler}
+    local proto
+    if (use_tls) then
+        cfg.listen = listen_with_single_ssl_pair
+        proto = 'https'
+    else
+        proto = 'http'
+    end
+    http.cfg(cfg)
+    check_site_content(ver, proto, 'foo.tarantool.io:3300/', '', 3)
+end
+
+g_good_handlers.test_empty_response1_http1_insecure = function()
+    test_empty_response(empty_handler1, '--http1.1')
+end
+
+g_good_handlers.test_empty_response1_http1_tls = function()
+    test_empty_response(empty_handler1, '--http1.1', true)
+end
+
+g_good_handlers.test_empty_response1_http2_insecure = function()
+    test_empty_response(empty_handler1, '--http2')
+end
+
+g_good_handlers.test_empty_response1_http2_tls = function()
+    test_empty_response(empty_handler1, '--http2', true)
+end
+
+g_good_handlers.test_empty_response2_http1_insecure = function()
+    test_empty_response(empty_handler2, '--http1.1')
+end
+
+g_good_handlers.test_empty_response2_http1_tls = function()
+    test_empty_response(empty_handler2, '--http1.1', true)
+end
+
+g_good_handlers.test_empty_response2_http2_insecure = function()
+    test_empty_response(empty_handler2, '--http2')
+end
+
+g_good_handlers.test_empty_response2_http2_tls = function()
+    test_empty_response(empty_handler2, '--http2', true)
+end
+
+g_good_handlers.test_empty_response3_http1_insecure = function()
+    test_empty_response(empty_handler3, '--http1.1')
+end
+
+g_good_handlers.test_empty_response3_http1_tls = function()
+    test_empty_response(empty_handler3, '--http1.1', true)
+end
+
+g_good_handlers.test_empty_response3_http2_insecure = function()
+    test_empty_response(empty_handler3, '--http2')
+end
+
+g_good_handlers.test_empty_response3_http2_tls = function()
+    test_empty_response(empty_handler3, '--http2', true)
 end

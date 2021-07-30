@@ -1071,6 +1071,17 @@ fill_http_headers(lua_State *L, lua_response_t *response, int param_lua_idx)
 }
 
 /* Launched in TX thread */
+static inline void
+set_no_payload(lua_response_t *response)
+{
+	/* Pointer can't be garbage even with 0 len,
+	 * w/o HTTPS libh2o passes it to low level OS functions
+	 * which are not smart enough. */
+	response->un.resp.any.payload = NULL;
+	response->un.resp.any.payload_len = 0;
+}
+
+/* Launched in TX thread */
 static int
 header_writer_write_header(lua_State *L)
 {
@@ -1124,7 +1135,7 @@ header_writer_write_header(lua_State *L)
 			lua_tolstring(L, 4, &payload_len);
 		response->un.resp.any.payload_len = payload_len;
 	} else
-		response->un.resp.any.payload_len = 0;
+		set_no_payload(response);
 
 	response->un.resp.any.is_last_send = is_last;
 	response->sent_something = true;
@@ -1635,7 +1646,7 @@ close_lua_req_internal(lua_State *L, shuttle_t *shuttle)
 	if (response->cancelled)
 		return;
 
-	response->un.resp.any.payload_len = 0;
+	set_no_payload(response);
 	response->un.resp.any.is_last_send = true;
 	if (response->sent_something)
 		stubborn_dispatch(shuttle->thread_ctx->queue_from_tx,
@@ -1704,7 +1715,7 @@ process_handler_failure_not_ws(shuttle_t *shuttle)
 	if (response->sent_something) {
 		/* Do not add anything to user output to prevent
 		 * corrupt HTML etc. */
-		response->un.resp.any.payload_len = 0;
+		set_no_payload(response);
 		func = &postprocess_lua_req_others;
 	} else {
 		static const char key[] = "content-type";
@@ -1761,7 +1772,7 @@ process_handler_success_not_ws_with_send(lua_State *L, shuttle_t *shuttle)
 			lua_tolstring(L, -1, &payload_len);
 		response->un.resp.any.payload_len = payload_len;
 	} else
-		response->un.resp.any.payload_len = 0;
+		set_no_payload(response);
 
 	response->un.resp.any.is_last_send = true;
 
@@ -2001,6 +2012,7 @@ lua_fiber_func(va_list ap)
 	/* We have finished parsing request, now can write to response
 	 * (it is union). */
 	response->un.resp.first.num_headers = 0;
+	response->un.resp.any.is_last_send = false;
 
 	/* Second param for Lua handler - io. */
 	lua_createtable(L, 0, 6);

@@ -403,7 +403,7 @@ print '\n\n\nFilling in test spaces completed, launching HTTP server...\n\n'
 init_func({
     threads = 4,
     max_conn_per_thread = 64,
-    shuttle_size = 1024,
+    shuttle_size = 1280,
     max_body_len = 16 * 1024 * 1024,
     use_body_split = true,
     listen = {

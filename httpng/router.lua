@@ -8,14 +8,12 @@ local function stash(stashes, pattern, name_offset, name_offset_after_last,
         string.sub(path, match_offset, match_offset_after_last)
 end
 
-local function check_match(req, v)
+local function check_match(stashes, path, v)
     local pattern = v.entry.path
-    local path = req.path
     if (path == pattern) then
         return true
     end
 
-    local stashes = req._stashes
     local pattern_len1 = #pattern + 1
     local path_len1 = #path + 1
     local pattern_offset = 1
@@ -157,8 +155,12 @@ end
 local function handle(unused, req, io)
     local routes = req._used_router._routes
     req._stashes = {}
+    local stashes = req._stashes
+    local query = req.query
+    local query_cut_len = (query == nil) and -1 or -(#query + 2)
+    local path = req.path:sub(1, query_cut_len)
     for _, v in pairs(routes) do
-        if check_match(req, v) then
+        if check_match(stashes, path, v) then
             return v.handler(req, io)
         end
     end

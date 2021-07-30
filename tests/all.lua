@@ -5,6 +5,7 @@ local popen
 pcall(function() popen = require 'popen' end)
 local curl_bin = 'curl'
 local router_module
+local router_module_c
 local router_checked = false
 
 local stubborn_handler = function(req, io)
@@ -132,7 +133,7 @@ end
 local load_router_module = function()
     -- Check both ways to get router module.
     router_module = require 'httpng.router'
-    --router_module = require 'httpng.router_c'
+    router_module_c = require 'httpng.router_c'
     local router_module_alt = require 'httpng'.router
     return ((router_module == nil) == (router_module_alt == nil))
 end
@@ -153,8 +154,11 @@ local ensure_router = function()
     goto check_router_available
 end
 
-local function get_new_router()
+local function get_new_router(use_c_router)
     ensure_router()
+    if use_c_router then
+        return router_module_c.new()
+    end
     return router_module.new()
 end
 
@@ -1784,18 +1788,28 @@ g_good_handlers.test_router_available = function()
     t.fail_if(router_module == nil, 'No router module available')
 end
 
-g_good_handlers.test_router_basics = function()
-    local router = get_new_router()
+local test_router_basics = function(use_c_router)
+    local router = get_new_router(use_c_router)
     router:route({path = '/foo'}, foo_handler)
     router:route({path = '/bar'}, bar_handler)
 
     http.cfg{handler = router}
     check_site_content('', 'http', 'localhost:3300/foo', 'foo')
     check_site_content('', 'http', 'localhost:3300/bar', 'bar')
+    check_site_content('', 'http', 'localhost:3300/foo?query=0', 'foo')
+    check_site_content('', 'http', 'localhost:3300/bar?query=0', 'bar')
 end
 
-g_good_handlers.test_router_configured = function()
-    local router = get_new_router()
+g_good_handlers.test_router_basics_lua = function()
+    test_router_basics()
+end
+
+g_good_handlers.test_router_basics_c = function()
+    test_router_basics(true)
+end
+
+local test_router_configured = function(use_c_router)
+    local router = get_new_router(use_c_router)
     router:route({path = '/foo'}, foo_handler)
 
     http.cfg{handler = router}
@@ -1806,8 +1820,16 @@ g_good_handlers.test_router_configured = function()
     check_site_content('', 'http', 'localhost:3300/bar', 'bar')
 end
 
-g_good_handlers.test_router_collect = function()
-    local router = get_new_router()
+g_good_handlers.test_router_configured_lua = function()
+    test_router_configured()
+end
+
+g_good_handlers.test_router_configured_c = function()
+    test_router_configured(true)
+end
+
+local test_router_collect = function(use_c_router)
+    local router = get_new_router(use_c_router)
     router:route({path = '/foo'}, foo_handler)
     router:route({path = '/bar'}, bar_handler)
 
@@ -1820,8 +1842,16 @@ g_good_handlers.test_router_collect = function()
     collectgarbage()
 end
 
-g_good_handlers.test_router_placeholder_regular = function()
-    local router = get_new_router()
+g_good_handlers.test_router_collect_lua = function()
+    test_router_collect()
+end
+
+g_good_handlers.test_router_collect_c = function()
+    test_router_collect(true)
+end
+
+local test_router_placeholder_regular = function(use_c_router)
+    local router = get_new_router(use_c_router)
     router:route({path = '/foo'}, foo_handler)
     router:route({path = '/:bar'}, bar_placeholder_handler)
     router:route({path = '/users/:user'}, users_placeholder_handler)
@@ -1833,10 +1863,24 @@ g_good_handlers.test_router_placeholder_regular = function()
     check_site_content('', 'http', 'localhost:3300/users/one', 'one')
     check_site_content('', 'http', 'localhost:3300/users/two', 'two')
     check_site_content('', 'http', 'localhost:3300/users/two/more', 'not found')
+    check_site_content('', 'http', 'localhost:3300/foo?query=0', 'foo')
+    check_site_content('', 'http', 'localhost:3300/bar?query=0', 'bar')
+    check_site_content('', 'http', 'localhost:3300/stuff?query=0', 'bar')
+    check_site_content('', 'http', 'localhost:3300/users/one?query=0', 'one')
+    check_site_content('', 'http', 'localhost:3300/users/two?query=0', 'two')
+    check_site_content('', 'http', 'localhost:3300/users/two/more?query=0', 'not found')
 end
 
-g_good_handlers.test_router_placeholder_wildcard = function()
-    local router = get_new_router()
+g_good_handlers.test_router_placeholder_regular_lua = function()
+    test_router_placeholder_regular()
+end
+
+g_good_handlers.test_router_placeholder_regular_c = function()
+    test_router_placeholder_regular(true)
+end
+
+local test_router_placeholder_wildcard = function(use_c_router)
+    local router = get_new_router(use_c_router)
     router:route({path = '/foo'}, foo_handler)
     router:route({path = '/users/*user'}, users_placeholder_handler)
     router:route({path = '/*bar'}, bar_placeholder_handler)
@@ -1848,6 +1892,20 @@ g_good_handlers.test_router_placeholder_wildcard = function()
     check_site_content('', 'http', 'localhost:3300/users/one', 'one')
     check_site_content('', 'http', 'localhost:3300/users/two', 'two')
     check_site_content('', 'http', 'localhost:3300/users/two/more', 'two/more')
+    check_site_content('', 'http', 'localhost:3300/foo?query=0', 'foo')
+    check_site_content('', 'http', 'localhost:3300/bar?query=0', 'bar')
+    check_site_content('', 'http', 'localhost:3300/stuff?query=0', 'bar')
+    check_site_content('', 'http', 'localhost:3300/users/one?query=0', 'one')
+    check_site_content('', 'http', 'localhost:3300/users/two?query=0', 'two')
+    check_site_content('', 'http', 'localhost:3300/users/two/more?query=0', 'two/more')
+end
+
+g_good_handlers.test_router_placeholder_wildcard_lua = function()
+    test_router_placeholder_wildcard()
+end
+
+g_good_handlers.test_router_placeholder_wildcard_c = function()
+    test_router_placeholder_wildcard(true)
 end
 
 local test_empty_response = function(handler, ver, use_tls)

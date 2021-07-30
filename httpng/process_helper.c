@@ -48,8 +48,24 @@ execute(process_helper_req_t *req)
 			*pos = 0;
 			args[count++] = prev_pos;
 			prev_pos = pos + 1;
+			if (pos + 1 >= end)
+				break;
+			if (*(pos + 1) == '"') {
+				++prev_pos;
+				pos = pos + 2;
+				while (1) {
+					if (pos >= end)
+						goto done;
+					if (*pos == '"') {
+						*pos = 0;
+						break;
+					}
+					++pos;
+				}
+			}
 		}
 	} while (++pos < end);
+done:
 	if (*(pos - 1) != 0)
 		return -1;
 	args[count] = NULL;
@@ -165,6 +181,12 @@ launch_reaper_server(void)
 	return 0;
 }
 
+static inline bool
+must_be_quoted(const char *str)
+{
+	return strchr(str, ' ') != NULL;
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -175,10 +197,18 @@ main(int argc, char *argv[])
 		return 2;
 	int i;
 	for (i = 1; i < argc; ++i) {
-		const size_t len = strlen(argv[i]);
+		size_t len = strlen(argv[i]);
 		if (total_len + len + 1>= sizeof(long_str))
 			return 1;
-		memcpy(&long_str[total_len], argv[i], len);
+		if (must_be_quoted(argv[i])) {
+			len += 2;
+			if (total_len + len + 1 >= sizeof(long_str))
+				return 1;
+			long_str[total_len] = '"';
+			memcpy(&long_str[total_len + 1], argv[i], len);
+			long_str[total_len + len - 1] = '"';
+		} else
+			memcpy(&long_str[total_len], argv[i], len);
 		total_len += len;
 		long_str[total_len] = ' ';
 		++total_len;

@@ -250,7 +250,6 @@ typedef struct waiter {
 typedef struct {
 	char *path;
 	lua_h2o_handler_t *(lua_handlers[MAX_threads]);
-	const char *real_path; /* NULL for Lua handlers. */
 	int lua_handler_ref;
 	int router_lua_function_ref; /* FIXME: Refactor ref names? */
 	int old_lua_handler_ref;
@@ -511,13 +510,6 @@ is_site_added(const lua_site_t *lua_site, unsigned generation)
 		generation - ADD_NEW_SITE_GENERATION_SHIFT);
 }
 
-/* Launched in TX thread. */
-static inline bool
-is_site_obsoleted(const lua_site_t *lua_site, unsigned generation)
-{
-	return (generation - lua_site->generation == GENERATION_INCREMENT);
-}
-
 /* Can be launched in TX thread or HTTP server thread. */
 static inline void
 xtm_fun_invoke_all(struct xtm_queue *queue)
@@ -617,16 +609,6 @@ stubborn_dispatch_thr_from_tx(thread_ctx_t *thread_ctx,
 {
 	stubborn_dispatch_uni(thread_ctx->queue_from_tx,
 		(void *)func, thread_ctx);
-}
-
-/* Launched in TX thread.
- * Called when dispatch must not fail. */
-static inline void
-stubborn_dispatch_to_http_add_site(thread_ctx_t *thread_ctx,
-	void (*func)(add_site_t *), add_site_t *param)
-{
-	stubborn_dispatch_uni(thread_ctx->queue_from_tx,
-		(void *)func, param);
 }
 
 /* Launched in HTTP server thread. */
@@ -2356,7 +2338,6 @@ register_lua_handler_part_one(lua_site_t *lua_site,
 	memcpy(lua_site->path, path, lua_site->path_len);
 	lua_site->path[lua_site->path_len] = 0;
 	lua_site->lua_handler_ref = lua_handler_ref;
-	lua_site->real_path = NULL;
 }
 
 /* Launched in TX thread. */
@@ -4173,13 +4154,9 @@ enum {
 static void
 replace_lua_handler_ref(lua_site_t *site)
 {
-	assert(site->real_path != NULL ||
-		site->lua_handler_ref != site->new_lua_handler_ref);
+	assert(site->lua_handler_ref != site->new_lua_handler_ref);
 	site->old_lua_handler_ref = site->lua_handler_ref;
 	site->lua_handler_ref = site->new_lua_handler_ref;
-
-	if (site->real_path != NULL)
-		return;
 
 	unsigned thread_idx;
 	for (thread_idx = 0; thread_idx < MAX_threads;
@@ -4233,176 +4210,6 @@ replace_lua_handlers(lua_State *L)
 			luaL_unref(L, LUA_REGISTRYINDEX,
 				site->old_lua_handler_ref);
 	}
-}
-
-/* Launched in TX thread. */
-static void
-done_with_new_site(void *param)
-{
-	(void)param;
-	--conf.add_new_sites_counter;
-}
-
-/* Launched in HTTP server thread.
- * Moves root to the end of list.
- * FIXME: Support all kinds of "overlapped" paths maybe? */
-static void
-reorder_paths(thread_ctx_t *thread_ctx)
-{
-	int root_idx = -1;
-	int non_root_idx = -1;
-
-	/* FIXME: More than one. */
-	const h2o_hostconf_t *const hostconf = thread_ctx->hostconf;
-	assert(hostconf != NULL);
-
-	unsigned idx;
-	for (idx = 0; idx < hostconf->paths.size; ++idx) {
-		const h2o_pathconf_t *const pathconf =
-			&hostconf->paths.entries[idx];
-		assert(pathconf->path.base != NULL);
-		if (pathconf->path.len == 1 && *pathconf->path.base == '/')
-			root_idx = idx;
-		else
-			non_root_idx = idx;
-	}
-	if (root_idx < 0 || non_root_idx < 0)
-		return;
-	if (root_idx >= non_root_idx)
-		return;
-
-	const h2o_pathconf_t tmp = hostconf->paths.entries[root_idx];
-	hostconf->paths.entries[root_idx] =
-		hostconf->paths.entries[non_root_idx];
-	hostconf->paths.entries[non_root_idx] = tmp;
-}
-
-/* Can be launched in TX thread or HTTP server thread. */
-static inline void
-replace_file_path(thread_ctx_t *thread_ctx, lua_site_t *site)
-{
-	if (site->real_path == NULL)
-		return;
-	h2o_hostconf_t *const hostconf = thread_ctx->hostconf;
-	/* We do not maintain 1:1 correlation between indexes,
-	 * have to search for this path. */
-	const char *const path = site->path;
-	const unsigned path_len = site->path_len;
-	unsigned path_idx;
-	for (path_idx = 0; path_idx < hostconf->paths.size; ++path_idx)
-		if (hostconf->paths.entries[path_idx].path.len == path_len &&
-		    !memcmp(path, hostconf->paths.entries[path_idx].path.base,
-			   path_len))
-			goto found;
-	assert(false); /* Should never happen. */
-	return;
-
-found:
-	;
-	h2o_file_handler_t *const handler =
-		(h2o_file_handler_t *)site->lua_handlers[thread_ctx->idx];
-	h2o_replace_file_handler_real_path(handler, site->real_path);
-}
-
-/* Can be launched in TX thread or HTTP server thread. */
-static void
-hot_reload_add_remove_sites_in_some_thr(thread_ctx_t *thread_ctx,
-	add_site_t *new_site, bool is_tx_thread)
-{
-	/* FIXME: More than one. */
-	h2o_hostconf_t *const hostconf = thread_ctx->hostconf;
-
-	const unsigned added_generation =
-		conf.generation - ADD_NEW_SITE_GENERATION_SHIFT;
-	unsigned idx;
-	for (idx = 0; idx < conf.lua_site_count +
-	    new_site->extra_sites; ++idx) {
-		lua_site_t *const lua_site = &conf.lua_sites[idx];
-		if (lua_site->generation != added_generation) {
-			if (lua_site->generation == conf.generation) {
-				replace_file_path(thread_ctx, lua_site);
-				continue;
-			}
-			/* Remove.
-			 * We do not maintain 1:1 correlation between indexes,
-			 * have to search for this path. */
-			const char *const path = lua_site->path;
-			const unsigned path_len = lua_site->path_len;
-			unsigned path_idx;
-			for (path_idx = 0; path_idx < hostconf->paths.size;
-			    ++path_idx) {
-				if (hostconf->paths.entries[path_idx].path.len
-				    == path_len && !memcmp(path,
-					    hostconf->paths.entries[path_idx]
-					    .path.base, path_len))
-					goto found;
-			}
-			assert(false); /* Should never happen. */
-			continue;
-
-		found:
-			h2o_config_dispose_pathconf(
-				&hostconf->paths.entries[path_idx]);
-			memmove(&hostconf->paths.entries[path_idx],
-				&hostconf->paths.entries[path_idx + 1],
-				(conf.lua_site_count + new_site->extra_sites
-				- path_idx - 1)
-				* sizeof(hostconf->paths.entries[0]));
-			--hostconf->paths.size;
-			/* We can adjust .capacity and do realloc(). */
-			continue;
-		}
-		h2o_pathconf_t *const pathconf =
-			register_lua_handler_part_two(thread_ctx->hostconf,
-				lua_site, thread_ctx->idx);
-		if (!is_tx_thread)
-			h2o_context_init_pathconf_context(&thread_ctx->ctx,
-				pathconf);
-	}
-	reorder_paths(thread_ctx);
-	if (is_tx_thread)
-		return;
-	__sync_synchronize(); /* We have written to *lua_site. */
-	stubborn_dispatch_uni(thread_ctx->queue_to_tx,
-		(void *)done_with_new_site, NULL);
-}
-
-/* Launched in HTTP server thread. */
-static void
-hot_reload_add_remove_sites_in_http_thr(add_site_t *new_site)
-{
-	return hot_reload_add_remove_sites_in_some_thr(get_curr_thread_ctx(),
-		new_site, false);
-}
-
-/* Launched in TX thread. */
-static void
-hot_reload_add_remove_sites_in_tx_thr(thread_ctx_t *thread_ctx,
-	add_site_t *new_site)
-{
-	return hot_reload_add_remove_sites_in_some_thr(thread_ctx,
-		new_site, true);
-}
-
-/* Launched in TX thread. */
-static void
-hot_reload_add_remove_sites(unsigned extra_sites)
-{
-	add_site_t new_site = (add_site_t){extra_sites};
-	conf.add_new_sites_counter = conf.num_threads;
-	__sync_synchronize();
-	unsigned idx;
-	for (idx = 0; idx < conf.num_threads; ++idx) {
-		stubborn_dispatch_to_http_add_site(&conf.thread_ctxs[idx],
-			hot_reload_add_remove_sites_in_http_thr, &new_site);
-	}
-	for (; idx < MAX_threads; ++idx) {
-		hot_reload_add_remove_sites_in_tx_thr(&conf.thread_ctxs[idx],
-			&new_site);
-	}
-	while (conf.add_new_sites_counter != 0)
-		fiber_sleep(0.001);
-	flush_lua_ref_handlers();
 }
 
 /* Launched in TX thread. */
@@ -4611,7 +4418,6 @@ int cfg(lua_State *L)
 	STATIC_ASSERT(GENERATION_INCREMENT > ADD_NEW_SITE_GENERATION_SHIFT,
 		"GENERATION_INCREMENT is not large enough");
 	const char *lerr = NULL; /* Error message for caller. */
-	unsigned removed_sites = 0;
 	unsigned thr_init_idx = 0;
 	unsigned fiber_idx = 0;
 	unsigned xtm_to_tx_idx = 0;
@@ -4800,7 +4606,6 @@ Skip_c_sites:
 Skip_inits_on_hot_reload:
 	;
 	lua_site_t *lua_sites = NULL;
-	unsigned hot_reload_extra_sites = 0;
 	unsigned lua_site_count = 0;
 	const unsigned generation = (conf.generation += GENERATION_INCREMENT);
 
@@ -5086,33 +4891,6 @@ Apply_new_config_hot_reload:
 		conf.num_desired_threads = conf.num_threads = threads;
 	}
 
-	hot_reload_add_remove_sites(hot_reload_extra_sites);
-
-	for (idx = 0; idx < conf.lua_site_count + hot_reload_extra_sites -
-	    removed_sites;) {
-		lua_site_t *const lua_site = &conf.lua_sites[idx];
-		if (is_site_obsoleted(lua_site, generation)) {
-			free(lua_site->path);
-			luaL_unref(L, LUA_REGISTRYINDEX,
-				lua_site->lua_handler_ref);
-			memmove(lua_site, lua_site + 1, (conf.lua_site_count
-				+ hot_reload_extra_sites - ++removed_sites
-				- idx) * sizeof(*lua_site));
-		} else
-			++idx;
-	}
-	if (removed_sites > 0) {
-		size_t new_size = (conf.lua_site_count
-			+ hot_reload_extra_sites
-			- removed_sites) * sizeof(lua_site_t);
-		if (new_size == 0)
-			new_size = 1; /* realloc(0) frees block. */
-		lua_site_t *const new_lua_sites =
-			(lua_site_t *)realloc(conf.lua_sites, new_size);
-		if (new_lua_sites != NULL)
-			conf.lua_sites = new_lua_sites;
-	}
-
 Apply_new_config:
 	conf.use_body_split = use_body_split;
 	conf.max_conn_per_thread = max_conn_per_thread;
@@ -5131,8 +4909,6 @@ Apply_new_config:
 	if (!is_hot_reload)
 		goto After_applying_new_config;
 
-	conf.lua_site_count += hot_reload_extra_sites;
-	conf.lua_site_count -= removed_sites;
 	replace_lua_handlers(L);
 	hot_reload_remove_threads(threads);
 
@@ -5184,14 +4960,12 @@ failed_to_add_threads:
 invalid_handler:
 invalid_sites:
 	if (is_hot_reload) {
-		for (idx = 0; idx < conf.lua_site_count +
-		    hot_reload_extra_sites; ++idx) {
+		for (idx = 0; idx < conf.lua_site_count; ++idx) {
 			lua_site_t *const lua_site = &conf.lua_sites[idx];
-			if (lua_site->generation == generation) {
-				if (lua_site->real_path == NULL)
-					luaL_unref(L, LUA_REGISTRYINDEX,
-						lua_site->new_lua_handler_ref);
-			} else {
+			if (lua_site->generation == generation)
+				luaL_unref(L, LUA_REGISTRYINDEX,
+					lua_site->new_lua_handler_ref);
+			else {
 				if (is_site_added(lua_site, generation)) {
 					if (lua_site->lua_handler_ref !=
 					    LUA_REFNIL)
@@ -5201,18 +4975,6 @@ invalid_sites:
 				}
 				lua_site->generation = generation;
 			}
-		}
-		if (hot_reload_extra_sites) {
-			/* realloc(0) frees block. */
-			const size_t new_size = (conf.lua_site_count == 0) ?
-				1 : conf.lua_site_count * sizeof(lua_site_t);
-			lua_site_t *const new_lua_sites =
-				(lua_site_t *)realloc(conf.lua_sites,
-					new_size);
-			if (new_lua_sites != NULL)
-				conf.lua_sites = new_lua_sites;
-			/* We can complain about failed realloc(smaller),
-			 * but what is the point? */
 		}
 	} else for (idx = 0; idx < lua_site_count; ++idx) {
 		lua_site_t *const lua_site = &lua_sites[idx];

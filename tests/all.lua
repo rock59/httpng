@@ -620,35 +620,6 @@ local cfg_for_two_sites = function(cfg, first, second, ver, use_tls)
     return proto, location_main, location_alt
 end
 
-local test_remove_all_paths_alt = function(ver, use_tls)
-    local cfg = {
-        handler = foo_handler,
-        threads = 4,
-    }
-    local proto, location_main, location_alt =
-        cfg_for_two_sites(cfg, '', 'bar', ver, use_tls)
-    check_site_content(ver, proto, location_main, 'foo')
-
-    cfg.handler = nil
-    cfg.listen = nil
-
-    my_http_cfg(cfg)
-    check_site_content(ver, proto, location_main, 'not found')
-end
-
-g_hot_reload.test_remove_all_paths_alt_http1_insecure = function()
-    test_remove_all_paths_alt '--http1.1'
-end
-
-g_hot_reload.test_remove_all_paths_alt_http1_tls = function()
-    test_remove_all_paths_alt('--http1.1', true)
-end
-
-g_hot_reload.test_remove_all_paths_alt_http2 = function()
-    ensure_http2()
-    test_remove_all_paths_alt '--http2'
-end
-
 g_hot_reload.test_change_params = function()
     local cfg = {
         handler = write_handler,

@@ -116,6 +116,16 @@
 
 #define STR_PORT_LENGTH 8
 
+#if PACKAGE_VERSION_MAJOR >= 2
+# if PACKAGE_VERSION_MINOR >= 4
+# define THERE_IS_ISCDATA
+# endif /* PACKAGE_VERSION_MINOR >= 4 */
+#else
+# if PACKAGE_VERSION_MINOR >= 10 && PACKAGE_VERSION_PATCH >= 8
+# define THERE_IS_ISCDATA
+# endif /* PACKAGE_VERSION_MINOR >= 10 && PACKAGE_VERSION_PATCH >= 8 */
+#endif /* PACKAGE_VERSION_MAJOR >= 2 */
+
 struct listener_ctx;
 
 typedef struct {
@@ -464,9 +474,22 @@ complain_loudly_about_leaked_fds(void)
 
 /* Launched in TX thread. */
 static inline bool
+is_cdata(lua_State *L, int idx)
+{
+#ifdef THERE_IS_ISCDATA
+	return luaL_iscdata(L, idx);
+#else /* THERE_IS_ISCDATA */
+#define LUA_TCDATA 10 /* Can't use Tarantool private headers. */
+	return lua_type(L, idx) == LUA_TCDATA;
+#undef LUA_TCDATA
+#endif /* THERE_IS_ISCDATA */
+}
+
+/* Launched in TX thread. */
+static inline bool
 is_box_null(lua_State *L, int idx)
 {
-	return luaL_iscdata(L, idx) && lua_touserdata(L, idx) == NULL;
+	return is_cdata(L, idx) && lua_touserdata(L, idx) == NULL;
 }
 
 /* Launched in TX thread. */

@@ -63,8 +63,8 @@
 
 /* When disabled, HTTP requests with body not fitting into shuttle are failed.
  * N. b.: h2o allocates memory for the WHOLE body in any case. */
-#define SPLIT_LARGE_BODY
-//#undef SPLIT_LARGE_BODY
+#define SUPPORT_SPLITTING_LARGE_BODY
+//#undef SUPPORT_SPLITTING_LARGE_BODY
 
 #define H2O_DEFAULT_PORT_FOR_PROTOCOL_USED 65535
 #define H2O_CONTENT_LENGTH_UNSPECIFIED SIZE_MAX
@@ -100,8 +100,7 @@
 #define TLS1_2_STR "tls1.2"
 #define TLS1_3_STR "tls1.3"
 
-#define ADD_NEW_SITE_GENERATION_SHIFT 1
-#define GENERATION_INCREMENT 2
+#define GENERATION_INCREMENT 1
 
 #define REAPING_GRACEFUL (1 << 0)
 #define REAPING_UNGRACEFUL (1 << 1)
@@ -296,9 +295,9 @@ typedef struct {
 } received_http_header_handle_t;
 
 typedef struct {
-#ifdef SPLIT_LARGE_BODY
+#ifdef SUPPORT_SPLITTING_LARGE_BODY
 	size_t offset_within_body; /* For use by HTTP server thread. */
-#endif /* SPLIT_LARGE_BODY */
+#endif /* SUPPORT_SPLITTING_LARGE_BODY */
 	int lua_handler_ref; /* Reference to user Lua handler. */
 	int router_ref; /* Reference to router Lua table (not for C!) */
 	unsigned router_data_len;
@@ -312,9 +311,9 @@ typedef struct {
 	unsigned char version_major;
 	unsigned char version_minor;
 	bool is_encrypted;
-#ifdef SPLIT_LARGE_BODY
+#ifdef SUPPORT_SPLITTING_LARGE_BODY
 	bool is_body_incomplete;
-#endif /* SPLIT_LARGE_BODY */
+#endif /* SUPPORT_SPLITTING_LARGE_BODY */
 	char method[7];
 	char buffer[]; /* "path" from h2o_req_t goes first. */
 } lua_first_request_only_t;
@@ -390,9 +389,9 @@ static struct {
 	int tfo_queues;
 	int on_shutdown_ref;
 	unsigned char reaping_flags;
-#ifdef SPLIT_LARGE_BODY
+#ifdef SUPPORT_SPLITTING_LARGE_BODY
 	bool use_body_split;
-#endif /* SPLIT_LARGE_BODY */
+#endif /* SUPPORT_SPLITTING_LARGE_BODY */
 	bool configured;
 	bool cfg_in_progress;
 	bool hot_reload_in_progress;
@@ -500,14 +499,6 @@ h2o_linklist_unlink_fast(h2o_linklist_t *node)
 {
     node->next->prev = node->prev;
     node->prev->next = node->next;
-}
-
-/* Launched in TX thread. */
-static inline bool
-is_site_added(const lua_site_t *lua_site, unsigned generation)
-{
-	return (lua_site->generation ==
-		generation - ADD_NEW_SITE_GENERATION_SHIFT);
 }
 
 /* Can be launched in TX thread or HTTP server thread. */
@@ -1481,7 +1472,7 @@ header_writer_upgrade_to_websocket(lua_State *L)
 	return 1;
 }
 
-#ifdef SPLIT_LARGE_BODY
+#ifdef SUPPORT_SPLITTING_LARGE_BODY
 /* Launched in HTTP server thread. */
 static void
 retrieve_more_body(shuttle_t *const shuttle)
@@ -1511,7 +1502,7 @@ retrieve_more_body(shuttle_t *const shuttle)
 	stubborn_dispatch_lua(get_curr_thread_ctx()->queue_to_tx,
 		continue_processing_lua_req_in_tx, response);
 }
-#endif /* SPLIT_LARGE_BODY */
+#endif /* SUPPORT_SPLITTING_LARGE_BODY */
 
 /* Launched in TX thread. */
 static inline void
@@ -1553,9 +1544,9 @@ fill_received_headers_and_body(lua_State *L, shuttle_t *shuttle)
 			response->un.req.router_data_len],
 		response->un.req.router_data_len,
 		&response->un.req.buffer);
-#ifdef SPLIT_LARGE_BODY
+#ifdef SUPPORT_SPLITTING_LARGE_BODY
 	if (!response->un.req.is_body_incomplete)
-#endif /* SPLIT_LARGE_BODY */
+#endif /* SUPPORT_SPLITTING_LARGE_BODY */
 	{
 		lua_pushlstring(L, &response->un.req.buffer[current_offset],
 			response->un.req.body_len);
@@ -1563,7 +1554,7 @@ fill_received_headers_and_body(lua_State *L, shuttle_t *shuttle)
 		return 0;
 	}
 
-#ifdef SPLIT_LARGE_BODY
+#ifdef SUPPORT_SPLITTING_LARGE_BODY
 	/* FIXME: Should use content-length to preallocate enough memory and
 	 * avoid allocations and copying. Or we can just allocate in
 	 * HTTP server thread and pass pointer. */
@@ -1613,7 +1604,7 @@ fill_received_headers_and_body(lua_State *L, shuttle_t *shuttle)
 	free(body_buf);
 	lua_setfield(L, -2, "body");
 	return 0;
-#endif /* SPLIT_LARGE_BODY */
+#endif /* SUPPORT_SPLITTING_LARGE_BODY */
 }
 
 /* Launched in TX thread. */
@@ -2237,14 +2228,14 @@ lua_req_handler_ex(const char *path, h2o_req_t *req,
 
 	unsigned body_bytes_to_copy;
 	if (current_offset + req->entity.len > max_offset) {
-#ifdef SPLIT_LARGE_BODY
+#ifdef SUPPORT_SPLITTING_LARGE_BODY
 		if (conf.use_body_split) {
 			response->un.req.is_body_incomplete = true;
 			body_bytes_to_copy = max_offset - current_offset;
 			response->un.req.offset_within_body =
 				body_bytes_to_copy;
 		} else
-#endif /* SPLIT_LARGE_BODY */
+#endif /* SUPPORT_SPLITTING_LARGE_BODY */
 		{
 			/* Error. */
 			free_shuttle_with_anchor(shuttle);
@@ -2255,9 +2246,9 @@ lua_req_handler_ex(const char *path, h2o_req_t *req,
 			return 0;
 		}
 	} else {
-#ifdef SPLIT_LARGE_BODY
+#ifdef SUPPORT_SPLITTING_LARGE_BODY
 		response->un.req.is_body_incomplete = false;
-#endif /* SPLIT_LARGE_BODY */
+#endif /* SUPPORT_SPLITTING_LARGE_BODY */
 		body_bytes_to_copy = req->entity.len;
 	}
 
@@ -4415,8 +4406,6 @@ configure_and_start_reaper_fiber(void)
 int cfg(lua_State *L)
 {
 	/* Lua parameters: lua_sites, function_to_call, function_param. */
-	STATIC_ASSERT(GENERATION_INCREMENT > ADD_NEW_SITE_GENERATION_SHIFT,
-		"GENERATION_INCREMENT is not large enough");
 	const char *lerr = NULL; /* Error message for caller. */
 	unsigned thr_init_idx = 0;
 	unsigned fiber_idx = 0;
@@ -4524,11 +4513,11 @@ Skip_c_sites:
 		}
 	}
 
-#ifdef SPLIT_LARGE_BODY
+#ifdef SUPPORT_SPLITTING_LARGE_BODY
 	lua_getfield(L, LUA_STACK_IDX_TABLE, "use_body_split");
 	const bool use_body_split =
 		is_nil_or_null(L, -1) ? false : lua_toboolean(L, -1);
-#endif /* SPLIT_LARGE_BODY */
+#endif /* SUPPORT_SPLITTING_LARGE_BODY */
 
 	/* FIXME: Add sanity checks, especially shuttle_size -
 	 * it must >sizeof(shuttle_t) (accounting for Lua payload)
@@ -4965,16 +4954,8 @@ invalid_sites:
 			if (lua_site->generation == generation)
 				luaL_unref(L, LUA_REGISTRYINDEX,
 					lua_site->new_lua_handler_ref);
-			else {
-				if (is_site_added(lua_site, generation)) {
-					if (lua_site->lua_handler_ref !=
-					    LUA_REFNIL)
-						luaL_unref(L, LUA_REGISTRYINDEX,
-						    lua_site->lua_handler_ref);
-					free(lua_site->path);
-				}
+			else
 				lua_site->generation = generation;
-			}
 		}
 	} else for (idx = 0; idx < lua_site_count; ++idx) {
 		lua_site_t *const lua_site = &lua_sites[idx];

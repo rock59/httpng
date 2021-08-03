@@ -361,11 +361,11 @@ typedef struct {
 	} un; /* Must be last member of struct. */
 } lua_response_t;
 
-typedef struct {
-	unsigned extra_sites;
-} add_site_t;
-
-typedef void shuttle_func_t(shuttle_t *shuttle);
+typedef void shuttle_func_t(shuttle_t *);
+typedef void lua_response_func_t(lua_response_t *);
+typedef void recv_data_func_t(recv_data_t *);
+typedef void thread_ctx_func_t(thread_ctx_t *);
+typedef int lua_handler_func_t(lua_h2o_handler_t *, h2o_req_t *);
 
 static struct {
 	listener_cfg_t *listener_cfgs;
@@ -418,6 +418,8 @@ static struct {
 
 __thread thread_ctx_t *curr_thread_ctx;
 
+static struct sockaddr_un reaper_addr;
+
 static const char shuttle_field_name[] = "_shuttle";
 static const char msg_cant_reap[] =
 	"Unable to reconfigure until threads will shut down";
@@ -445,6 +447,7 @@ static void fill_http_headers(lua_State *L, lua_response_t *response,
 /* Called when dispatch must not fail */
 extern void stubborn_dispatch_uni(struct xtm_queue *queue, void *func,
 	void *param);
+#define call_via_xtm(a, b, c) stubborn_dispatch_uni(a, b, c)
 
 #ifndef USE_LIBUV
 static void on_async_read(h2o_socket_t *sock, const char *err);
@@ -540,14 +543,23 @@ get_curr_thread_ctx(void)
 	return curr_thread_ctx;
 }
 
+/* Launched in HTTP(S) server thread. */
+static inline struct xtm_queue *
+get_queue_to_tx(void)
+{
+	return get_curr_thread_ctx()->queue_to_tx;
+}
+
 /* Can be launched in TX thread or HTTP server thread.
  * Called when dispatch must not fail. */
 static inline void
-stubborn_dispatch(struct xtm_queue *queue,
-	void (*func)(shuttle_t *), shuttle_t *shuttle)
+call_via_xtm_with_shuttle(struct xtm_queue *queue,
+	shuttle_func_t *func, shuttle_t *shuttle)
 {
-	stubborn_dispatch_uni(queue, (void *)func, (void *)shuttle);
+	call_via_xtm(queue, (void *)func, shuttle);
 }
+
+#define stubborn_dispatch(a, b, c) call_via_xtm_with_shuttle(a, b, c)
 
 /* Launched in TX thread.
  * FIXME: Use lua_tointegerx() when we would no longer care about
@@ -576,6 +588,22 @@ get_shuttle_from_generator_lua(h2o_generator_t *generator)
 	return (shuttle_t *)((char *)response - offsetof(shuttle_t, payload));
 }
 
+/* Launched in TX thread. */
+static inline void
+call_in_http_thr_with_shuttle(shuttle_func_t *func, shuttle_t *shuttle)
+{
+	call_via_xtm_with_shuttle(shuttle->thread_ctx->queue_from_tx,
+		func, shuttle);
+}
+
+/* Launched in HTTP(S) server thread. */
+static inline void
+call_in_tx_with_shuttle(shuttle_func_t *func, shuttle_t *shuttle)
+{
+	call_via_xtm_with_shuttle(get_queue_to_tx(), func, shuttle);
+}
+
+
 /* Can be launched in TX thread or HTTP server thread.
  * Called when dispatch must not fail. */
 void
@@ -590,39 +618,71 @@ stubborn_dispatch_uni(struct xtm_queue *queue, void *func, void *param)
 /* Can be launched in TX thread or HTTP server thread.
  * Called when dispatch must not fail. */
 static inline void
-stubborn_dispatch_lua(struct xtm_queue *queue,
+call_via_xtm_with_lua_response(struct xtm_queue *queue,
 	void (*func)(lua_response_t *), lua_response_t *param)
 {
-	stubborn_dispatch_uni(queue, (void *)func, param);
+	call_via_xtm(queue, (void *)func, param);
+}
+
+/* Launched in TX thread. */
+static inline void
+call_in_http_thr_with_lua_response(lua_response_func_t *func,
+	lua_response_t *response)
+{
+	shuttle_t *const shuttle =
+		my_container_of(response, shuttle_t, payload);
+	call_via_xtm_with_lua_response(shuttle->thread_ctx->queue_from_tx,
+		func, response);
+}
+
+/* Launched in HTTP(S) server thread. */
+static inline void
+call_in_tx_with_lua_response(lua_response_func_t *func, lua_response_t *param)
+{
+	call_via_xtm_with_lua_response(get_queue_to_tx(), func, param);
 }
 
 /* Can be launched in TX thread or HTTP server thread.
  * Called when dispatch must not fail. */
 static inline void
-stubborn_dispatch_recv(struct xtm_queue *queue,
-	void (*func)(recv_data_t *), recv_data_t *param)
+call_via_xtm_with_recv_data(struct xtm_queue *queue, recv_data_func_t *func,
+	recv_data_t *param)
 {
-	stubborn_dispatch_uni(queue, (void *)func, param);
+	call_via_xtm(queue, (void *)func, param);
+}
+
+#ifdef SHOULD_FREE_RECV_DATA_IN_HTTP_SERVER_THREAD
+/* Launched in TX thread. */
+static inline void
+call_in_http_thr_with_recv_data(recv_data_func_t *func, recv_data_t *recv_data)
+{
+	call_via_xtm_with_recv_data(recv_data->parent_shuttle->thread_ctx
+		->queue_from_tx, func, recv_data);
+}
+#endif /* SHOULD_FREE_RECV_DATA_IN_HTTP_SERVER_THREAD */
+
+/* Launched in HTTP(S) server thread. */
+static inline void
+call_in_tx_with_recv_data(recv_data_func_t *func, recv_data_t *recv_data)
+{
+	call_via_xtm_with_recv_data(get_queue_to_tx(), func, recv_data);
 }
 
 /* Launched in HTTP server thread.
  * Called when dispatch must not fail. */
 static inline void
-stubborn_dispatch_thr_to_tx(thread_ctx_t *thread_ctx,
-	void (*func)(thread_ctx_t *))
+call_in_tx_with_thread_ctx(thread_ctx_func_t *func, thread_ctx_t *thread_ctx)
 {
-	stubborn_dispatch_uni(thread_ctx->queue_to_tx,
-		(void *)func, thread_ctx);
+	call_via_xtm(thread_ctx->queue_to_tx, (void *)func, thread_ctx);
 }
 
 /* Launched in TX thread.
  * Called when dispatch must not fail. */
 static inline void
-stubborn_dispatch_thr_from_tx(thread_ctx_t *thread_ctx,
-	void (*func)(thread_ctx_t *))
+call_in_http_thr_with_thread_ctx(thread_ctx_func_t *func,
+	thread_ctx_t *thread_ctx)
 {
-	stubborn_dispatch_uni(thread_ctx->queue_from_tx,
-		(void *)func, thread_ctx);
+	call_via_xtm(thread_ctx->queue_from_tx, (void *)func, thread_ctx);
 }
 
 /* Launched in HTTP server thread. */
@@ -670,8 +730,7 @@ free_lua_websocket_shuttle_internal(shuttle_t *shuttle)
 static void
 free_shuttle_from_tx_in_http_thr(shuttle_t *shuttle)
 {
-	stubborn_dispatch(shuttle->thread_ctx->queue_from_tx,
-		&free_shuttle_internal, shuttle);
+	call_in_http_thr_with_shuttle(free_shuttle_internal, shuttle);
 }
 
 #ifndef SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD
@@ -743,8 +802,8 @@ free_lua_websocket_shuttle_from_tx(shuttle_t *shuttle)
 		luaL_unref(L, LUA_REGISTRYINDEX, response->lua_recv_state_ref);
 	}
 #ifdef SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD
-	stubborn_dispatch(shuttle->thread_ctx->queue_from_tx,
-		&free_lua_websocket_shuttle_internal, shuttle);
+	call_in_http_thr_with_shuttle(free_lua_websocket_shuttle_internal,
+		shuttle);
 #else /* SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD */
 	free_lua_websocket_shuttle_internal(shuttle);
 #endif /* SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD */
@@ -773,9 +832,8 @@ free_lua_websocket_recv_data_from_tx(recv_data_t *recv_data)
 #ifdef SHOULD_FREE_RECV_DATA_IN_HTTP_SERVER_THREAD
 	/* Can't call free_recv_data() from TX thread because it
 	 * [potentially] uses per-thread pools w/o mutexes. */
-	stubborn_dispatch_recv(recv_data->parent_shuttle->thread_ctx
-		->queue_from_tx,
-		&free_lua_websocket_recv_data_internal, recv_data);
+	call_in_http_thr_with_recv_data(free_lua_websocket_recv_data_internal,
+		recv_data);
 #else /* SHOULD_FREE_RECV_DATA_IN_HTTP_SERVER_THREAD */
 	free_lua_websocket_recv_data_internal(recv_data);
 #endif /* SHOULD_FREE_RECV_DATA_IN_HTTP_SERVER_THREAD */
@@ -813,8 +871,8 @@ free_shuttle_lua(shuttle_t *shuttle)
 	lua_response_t *const response = (lua_response_t *)(&shuttle->payload);
 	if (!response->upgraded_to_websocket) {
 		shuttle->disposed = true;
-		stubborn_dispatch(get_curr_thread_ctx()->queue_to_tx,
-			&cancel_processing_lua_req_in_tx, shuttle);
+		call_in_tx_with_shuttle(cancel_processing_lua_req_in_tx,
+			shuttle);
 	}
 }
 
@@ -829,15 +887,21 @@ continue_processing_lua_req_in_tx(lua_response_t *response)
 	fiber_wakeup(response->waiter->fiber);
 }
 
+/* Launched in TX thread. */
+static inline void
+call_in_tx_continue_processing_lua_req(lua_response_t *response)
+{
+	call_in_tx_with_lua_response(continue_processing_lua_req_in_tx,
+		response);
+}
+
 /* Launched in HTTP server thread when H2O has sent everything
  * and asks for more. */
 static void
 proceed_sending_lua(h2o_generator_t *self, h2o_req_t *req)
 {
 	shuttle_t *const shuttle = get_shuttle_from_generator_lua(self);
-	thread_ctx_t *const thread_ctx = get_curr_thread_ctx();
-	stubborn_dispatch_lua(thread_ctx->queue_to_tx,
-		continue_processing_lua_req_in_tx,
+	call_in_tx_continue_processing_lua_req(
 		(lua_response_t *)&shuttle->payload);
 }
 
@@ -891,6 +955,13 @@ postprocess_lua_req_first(shuttle_t *shuttle)
 	send_lua(req, response);
 }
 
+/* Launched in TX thread. */
+static inline void
+call_in_http_thr_postprocess_lua_req_first(shuttle_t *shuttle)
+{
+	call_in_http_thr_with_shuttle(postprocess_lua_req_first, shuttle);
+}
+
 /* Launched in HTTP server thread to postprocess response (w/o HTTP headers) */
 static void
 postprocess_lua_req_others(shuttle_t *shuttle)
@@ -900,6 +971,13 @@ postprocess_lua_req_others(shuttle_t *shuttle)
 		return;
 	h2o_req_t *const req = shuttle->never_access_this_req_from_tx_thread;
 	send_lua(req, response);
+}
+
+/* Launched in TX thread. */
+static inline void
+call_in_http_thr_postprocess_lua_req_others(shuttle_t *shuttle)
+{
+	call_in_http_thr_with_shuttle(postprocess_lua_req_others, shuttle);
 }
 
 /* Launched in TX thread. */
@@ -1008,11 +1086,9 @@ payload_writer_write(lua_State *L)
 		fill_http_headers(L, response, headers_lua_index);
 
 		response->sent_something = true;
-		stubborn_dispatch(shuttle->thread_ctx->queue_from_tx,
-			&postprocess_lua_req_first, shuttle);
+		call_in_http_thr_postprocess_lua_req_first(shuttle);
 	} else
-		stubborn_dispatch(shuttle->thread_ctx->queue_from_tx,
-			&postprocess_lua_req_others, shuttle);
+		call_in_http_thr_postprocess_lua_req_others(shuttle);
 	wait_for_lua_shuttle_return(response);
 
 	/* Returning Lua true if connection has already been closed. */
@@ -1133,8 +1209,7 @@ header_writer_write_header(lua_State *L)
 
 	response->un.resp.any.is_last_send = is_last;
 	response->sent_something = true;
-	stubborn_dispatch(shuttle->thread_ctx->queue_from_tx,
-		&postprocess_lua_req_first, shuttle);
+	call_in_http_thr_postprocess_lua_req_first(shuttle);
 	wait_for_lua_shuttle_return(response);
 
 	/* Returning Lua true if connection has already been closed. */
@@ -1196,7 +1271,7 @@ websocket_msg_callback(h2o_websocket_conn_t *conn,
 		assert(conn == response->ws_conn);
 		h2o_websocket_close(conn);
 		response->ws_conn = NULL;
-		stubborn_dispatch_lua(get_curr_thread_ctx()->queue_to_tx,
+		call_in_tx_with_lua_response(
 			cancel_processing_lua_websocket_in_tx, response);
 		return;
 	}
@@ -1220,7 +1295,7 @@ websocket_msg_callback(h2o_websocket_conn_t *conn,
 			goto do_close;
 		memcpy(get_websocket_recv_location(recv_data), pos,
 			bytes_to_send);
-		stubborn_dispatch_recv(get_curr_thread_ctx()->queue_to_tx,
+		call_in_tx_with_recv_data(
 			process_lua_websocket_received_data_in_tx, recv_data);
 		if (response->ws_conn == NULL)
 			/* Handler has closed connection already. */
@@ -1256,8 +1331,7 @@ postprocess_lua_req_upgrade_to_websocket(shuttle_t *shuttle)
 	response->ws_conn = h2o_upgrade_to_websocket(req,
 		response->ws_client_key, shuttle, websocket_msg_callback);
 	/* anchor_dispose()/free_shuttle_lua() will be called by h2o. */
-	stubborn_dispatch_lua(get_curr_thread_ctx()->queue_to_tx,
-		continue_processing_lua_req_in_tx, response);
+	call_in_tx_continue_processing_lua_req(response);
 }
 
 /* Launched in HTTP server thread. */
@@ -1274,8 +1348,7 @@ postprocess_lua_req_websocket_send_text(lua_response_t *response)
 	if (wslay_event_queue_msg(response->ws_conn->ws_ctx, &msgarg) ||
 	    wslay_event_send(response->ws_conn->ws_ctx))
 		response->ws_send_failed = true;
-	stubborn_dispatch_lua(get_curr_thread_ctx()->queue_to_tx,
-		continue_processing_lua_req_in_tx, response);
+	call_in_tx_continue_processing_lua_req(response);
 }
 
 /* Launched in TX thread. */
@@ -1310,8 +1383,8 @@ websocket_send_text(lua_State *L)
 	response->un.resp.any.payload = lua_tolstring(L, 2, &payload_len);
 	response->un.resp.any.payload_len = payload_len;
 
-	stubborn_dispatch_lua(shuttle->thread_ctx->queue_from_tx,
-		&postprocess_lua_req_websocket_send_text, response);
+	call_in_http_thr_with_lua_response(
+		postprocess_lua_req_websocket_send_text, response);
 	wait_for_lua_shuttle_return(response);
 
 	/* Returning Lua true if send failed or connection has already
@@ -1328,8 +1401,14 @@ close_websocket(lua_response_t *const response)
 		h2o_websocket_close(response->ws_conn);
 		response->ws_conn = NULL;
 	}
-	stubborn_dispatch_lua(get_curr_thread_ctx()->queue_to_tx,
-		continue_processing_lua_req_in_tx, response);
+	call_in_tx_continue_processing_lua_req(response);
+}
+
+/* Launched in TX thread. */
+static inline void
+call_in_tx_close_websocket(lua_response_t *response)
+{
+	call_in_http_thr_with_lua_response(close_websocket, response);
 }
 
 /* Launched in TX thread. */
@@ -1357,8 +1436,7 @@ close_lua_websocket(lua_State *L)
 		return 0;
 
 	response->cancelled = true;
-	stubborn_dispatch_lua(shuttle->thread_ctx->queue_from_tx,
-		&close_websocket, response);
+	call_in_tx_close_websocket(response);
 	wait_for_lua_shuttle_return(response);
 	return 0;
 }
@@ -1477,8 +1555,8 @@ header_writer_upgrade_to_websocket(lua_State *L)
 	response->sent_something = true;
 	response->ws_send_failed = false;
 	response->in_recv_handler = false;
-	stubborn_dispatch(shuttle->thread_ctx->queue_from_tx,
-		&postprocess_lua_req_upgrade_to_websocket, shuttle);
+	call_in_http_thr_with_shuttle(postprocess_lua_req_upgrade_to_websocket,
+		shuttle);
 	wait_for_lua_shuttle_return(response);
 
 	if (response->cancelled)
@@ -1522,8 +1600,7 @@ retrieve_more_body(shuttle_t *const shuttle)
 	memcpy(&response->un.req.buffer, &req->entity.base[offset],
 		bytes_to_copy);
 
-	stubborn_dispatch_lua(get_curr_thread_ctx()->queue_to_tx,
-		continue_processing_lua_req_in_tx, response);
+	call_in_tx_continue_processing_lua_req(response);
 }
 #endif /* SUPPORT_SPLITTING_LARGE_BODY */
 
@@ -1599,8 +1676,7 @@ fill_received_headers_and_body(lua_State *L, shuttle_t *shuttle)
 			return 1;
 		}
 
-		stubborn_dispatch(shuttle->thread_ctx
-			->queue_from_tx, &retrieve_more_body, shuttle);
+		call_in_http_thr_with_shuttle(retrieve_more_body, shuttle);
 		wait_for_lua_shuttle_return(response);
 		if (response->cancelled) {
 			free(body_buf);
@@ -1642,16 +1718,14 @@ close_lua_req_internal(lua_State *L, shuttle_t *shuttle)
 	set_no_payload(response);
 	response->un.resp.any.is_last_send = true;
 	if (response->sent_something)
-		stubborn_dispatch(shuttle->thread_ctx->queue_from_tx,
-			&postprocess_lua_req_others, shuttle);
+		call_in_http_thr_postprocess_lua_req_others(shuttle);
 	else {
 		response->un.resp.first.http_code =
 			get_default_http_code(response);
 		response->sent_something = true;
 		response->un.resp.first.content_length =
 			H2O_CONTENT_LENGTH_UNSPECIFIED;
-		stubborn_dispatch(shuttle->thread_ctx->queue_from_tx,
-			&postprocess_lua_req_first, shuttle);
+		call_in_http_thr_postprocess_lua_req_first(shuttle);
 	}
 	wait_for_lua_shuttle_return(response);
 }
@@ -1675,9 +1749,9 @@ close_lua_req(lua_State *L)
 
 /* Launched in TX thread. */
 static void
-finish_handler_failure_processing(shuttle_t *shuttle, shuttle_func_t *func)
+finish_handler_failure_processing(shuttle_func_t *func, shuttle_t *shuttle)
 {
-	stubborn_dispatch(shuttle->thread_ctx->queue_from_tx, func, shuttle);
+	call_in_http_thr_with_shuttle(func, shuttle);
 	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
 	wait_for_lua_shuttle_return(response);
 	if (response->cancelled)
@@ -1723,7 +1797,7 @@ process_handler_failure_not_ws(shuttle_t *shuttle)
 		response->sent_something = true;
 		func = &postprocess_lua_req_first;
 	}
-	finish_handler_failure_processing(shuttle, func);
+	finish_handler_failure_processing(func, shuttle);
 }
 
 /* Launched in TX thread. */
@@ -1770,13 +1844,11 @@ process_handler_success_not_ws_with_send(lua_State *L, shuttle_t *shuttle)
 	response->un.resp.any.is_last_send = true;
 
 	if (old_sent_something)
-		stubborn_dispatch(shuttle->thread_ctx->queue_from_tx,
-			postprocess_lua_req_others, shuttle);
+		call_in_http_thr_postprocess_lua_req_others(shuttle);
 	else {
 		response->un.resp.first.content_length =
 			response->un.resp.any.payload_len;
-		stubborn_dispatch(shuttle->thread_ctx->queue_from_tx,
-			postprocess_lua_req_first, shuttle);
+		call_in_http_thr_postprocess_lua_req_first(shuttle);
 	}
 	wait_for_lua_shuttle_return(response);
 	if (response->cancelled)
@@ -1829,7 +1901,14 @@ tx_done(thread_ctx_t *thread_ctx)
 	thread_ctx->tx_done_notification_received = true;
 	if (thread_ctx->do_not_exit_tx_fiber)
 		return;
-	stubborn_dispatch_thr_to_tx(thread_ctx, exit_tx_fiber);
+	call_in_tx_with_thread_ctx(exit_tx_fiber, thread_ctx);
+}
+
+/* Launched in TX thread. */
+static inline void
+call_in_http_thr_tx_done(thread_ctx_t *thread_ctx)
+{
+	call_in_http_thr_with_thread_ctx(tx_done, thread_ctx);
 }
 
 /* Launched in TX thread. */
@@ -1900,7 +1979,7 @@ process_internal_error(shuttle_t *shuttle)
 	response->un.resp.first.content_length = sizeof(error_str) - 1;
 	response->sent_something = true;
 
-	finish_handler_failure_processing(shuttle, &postprocess_lua_req_first);
+	finish_handler_failure_processing(&postprocess_lua_req_first, shuttle);
 }
 
 /* Launched in TX thread. */
@@ -2038,8 +2117,7 @@ lua_fiber_func(va_list ap)
 				free_cancelled_lua_not_ws_shuttle_from_tx(shuttle);
 		} else if (response->upgraded_to_websocket) {
 			take_shuttle_ownership_lua(response);
-			stubborn_dispatch_lua(thread_ctx->queue_from_tx,
-				&close_websocket, response);
+			call_in_tx_close_websocket(response);
 			wait_for_lua_shuttle_return(response);
 			free_lua_websocket_shuttle_from_tx(shuttle);
 		} else {
@@ -2055,8 +2133,7 @@ lua_fiber_func(va_list ap)
 	} else if (response->upgraded_to_websocket) {
 		take_shuttle_ownership_lua(response);
 		assert(!response->cancelled);
-		stubborn_dispatch_lua(thread_ctx->queue_from_tx,
-			&close_websocket, response);
+		call_in_tx_close_websocket(response);
 		wait_for_lua_shuttle_return(response);
 		free_lua_websocket_shuttle_from_tx(shuttle);
 	} else if (lua_isnil(L, -1))
@@ -2069,7 +2146,7 @@ Done:
 	luaL_unref(luaT_state(), LUA_REGISTRYINDEX, lua_state_ref);
 	if (--thread_ctx->active_lua_fibers == 0 &&
 	    thread_ctx->should_notify_tx_done)
-		stubborn_dispatch_thr_from_tx(thread_ctx, &tx_done);
+		call_in_http_thr_tx_done(thread_ctx);
 
 	return 0;
 }
@@ -2096,8 +2173,7 @@ process_lua_req_in_tx(shuttle_t *shuttle)
 		response->sent_something = true; \
 		response->un.resp.first.content_length = \
 			sizeof(error_str) - 1; \
-		stubborn_dispatch(shuttle->thread_ctx->queue_from_tx, \
-			&postprocess_lua_req_first, shuttle); \
+		call_in_http_thr_postprocess_lua_req_first(shuttle); \
 		return; \
 	} while (0)
 
@@ -2299,8 +2375,7 @@ lua_req_handler_ex(const char *path, h2o_req_t *req,
 	response->un.req.is_encrypted =
 		(req->conn->callbacks->get_socket(req->conn)->ssl != NULL);
 
-	thread_ctx_t *const thread_ctx = get_curr_thread_ctx();
-	if (xtm_fun_dispatch(thread_ctx->queue_to_tx,
+	if (xtm_fun_dispatch(get_queue_to_tx(),
 	    (void(*)(void *))&process_lua_req_in_tx, shuttle, 0)) {
 		/* Error */
 		free_shuttle_with_anchor(shuttle);
@@ -2366,7 +2441,7 @@ register_router_part_one(lua_site_t *lua_site,
 static h2o_pathconf_t *
 register_complex_handler_part_two(h2o_hostconf_t *hostconf,
 	lua_site_t *lua_site, unsigned thread_idx,
-	int (*c_handler)(lua_h2o_handler_t *, h2o_req_t *),
+	lua_handler_func_t *c_handler,
 	void *c_handler_param, int router_ref)
 {
 	/* These functions never return NULL, dying instead */
@@ -2398,7 +2473,7 @@ register_lua_handler_part_two(h2o_hostconf_t *hostconf,
 static h2o_pathconf_t *
 register_router_part_two(h2o_hostconf_t *hostconf,
 	lua_site_t *lua_site, unsigned thread_idx,
-	int (*handler)(lua_h2o_handler_t *, h2o_req_t *),
+	lua_handler_func_t *handler,
 	void *handler_param, int router_ref)
 {
 	return register_complex_handler_part_two(hostconf, lua_site,
@@ -2450,7 +2525,8 @@ register_lua_router(lua_State *L, lua_site_t *lua_site, const char *path,
 	unsigned thread_idx;
 	for (thread_idx = 0; thread_idx < MAX_threads; ++thread_idx)
 		register_router_part_two(conf.thread_ctxs[thread_idx]
-			.hostconf, lua_site, thread_idx, router_wrapper,
+			.hostconf, lua_site, thread_idx,
+			(lua_handler_func_t *)router_wrapper,
 			NULL, ref);
 	return 0;
 }
@@ -2472,7 +2548,7 @@ register_router(lua_State *L, lua_site_t *lua_site, const char *path,
 		lua_pop(L, 2);
 		return 1;
 	}
-	conf.fill_router_data = lua_touserdata(L, -1);
+	conf.fill_router_data = (fill_router_data_t *)lua_touserdata(L, -1);
 
 	lua_getfield(L, -2, ROUTER_C_HANDLER_FIELD_NAME);
 	if (!lua_islightuserdata(L, -1)) {
@@ -2481,7 +2557,8 @@ register_router(lua_State *L, lua_site_t *lua_site, const char *path,
 		lua_pop(L, 3);
 		return 1;
 	}
-	void *const user_handler = lua_touserdata(L, -1);
+	lua_handler_func_t *const user_handler =
+		(lua_handler_func_t *)lua_touserdata(L, -1);
 
 	lua_getfield(L, -3, ROUTER_C_HANDLER_PARAM_FIELD_NAME);
 	if (!lua_isuserdata(L, -1)) {
@@ -2985,19 +3062,21 @@ ip_detection_fail:
 static sni_map_t *
 sni_map_create(int certs_num, const char **lerr)
 {
-	sni_map_t *sni_map = calloc(1, sizeof(*sni_map));
+	sni_map_t *sni_map = (sni_map_t *)calloc(1, sizeof(*sni_map));
 	if (sni_map == NULL) {
 		*lerr = "sni map memory allocation failed";
 		goto sni_map_alloc_fail;
 	}
 
-	sni_map->ssl_ctxs = calloc(certs_num, sizeof(*sni_map->ssl_ctxs));
+	sni_map->ssl_ctxs = (typeof(sni_map->ssl_ctxs))
+		calloc(certs_num, sizeof(*sni_map->ssl_ctxs));
 	if (sni_map->ssl_ctxs == NULL) {
 		*lerr = "memory allocation failed for ssl_ctxs in sni map";
 		goto ssl_ctxs_alloc_fail;
 	}
 	sni_map->ssl_ctxs_capacity = certs_num;
-	sni_map->sni_fields = calloc(certs_num, sizeof(*sni_map->sni_fields));
+	sni_map->sni_fields = (typeof(sni_map->sni_fields))
+		calloc(certs_num, sizeof(*sni_map->sni_fields));
 	if (sni_map->sni_fields == NULL) {
 		*lerr = "memory allocation failed for sni_fields in sni map";
 		goto sni_fields_alloc_fail;
@@ -3265,7 +3344,8 @@ load_default_listen_params(const char **lerr)
 {
 	conf.num_listeners = 2;
 	conf.sni_maps = NULL;
-	if ((conf.listener_cfgs = calloc(conf.num_listeners,
+	if ((conf.listener_cfgs =
+	    (typeof(conf.listener_cfgs))calloc(conf.num_listeners,
 	    sizeof(*conf.listener_cfgs))) == NULL) {
 		*lerr = "allocation memory for listener_cfgs failed";
 		goto Error;
@@ -3321,13 +3401,14 @@ load_and_handle_listen_from_lua(lua_State *L, int lua_stack_idx_table,
 	}
 	conf.num_listeners = lua_objlen(L, -1);
 
-	if ((conf.listener_cfgs = calloc(conf.num_listeners,
+	if ((conf.listener_cfgs =
+	    (typeof(conf.listener_cfgs))calloc(conf.num_listeners,
 	    sizeof(*conf.listener_cfgs))) == NULL) {
 		*lerr = "allocation memory for listener_cfgs failed";
 		goto listener_cfg_malloc_fail;
 	}
 
-	if ((conf.sni_maps = calloc(conf.num_listeners,
+	if ((conf.sni_maps = (typeof(conf.sni_maps))calloc(conf.num_listeners,
 	    sizeof(*conf.sni_maps)))== NULL) {
 		*lerr = "allocation memory for sni maps failed";
 		goto sni_map_alloc_fail;
@@ -3528,9 +3609,17 @@ static void
 finish_processing_lua_reqs_in_tx(thread_ctx_t *thread_ctx)
 {
 	if (thread_ctx->active_lua_fibers == 0)
-		stubborn_dispatch_thr_from_tx(thread_ctx, &tx_done);
+		call_in_http_thr_tx_done(thread_ctx);
 	else
 		thread_ctx->should_notify_tx_done = true;
+}
+
+/* Launched in HTTP(S) server thread. */
+static inline void
+call_in_tx_finish_processing_lua_reqs(thread_ctx_t *thread_ctx)
+{
+	call_in_tx_with_thread_ctx(finish_processing_lua_reqs_in_tx,
+		thread_ctx);
 }
 
 /* Launched in HTTP server thread. */
@@ -3607,8 +3696,7 @@ prepare_for_shutdown(thread_ctx_t *thread_ctx)
 	fprintf(stderr, "Thread #%u: shutdown request received, "
 		"waiting for TX processing to complete...\n",
 		thread_ctx->idx);
-	stubborn_dispatch_thr_to_tx(thread_ctx,
-		&finish_processing_lua_reqs_in_tx);
+	call_in_tx_finish_processing_lua_reqs(thread_ctx);
 }
 
 /* Launched in HTTP server thread. */
@@ -3623,8 +3711,7 @@ handle_graceful_shutdown(thread_ctx_t *thread_ctx)
 	/* There can still be requests in flight. */
 	thread_ctx->tx_done_notification_received = false;
 	thread_ctx->do_not_exit_tx_fiber = false;
-	stubborn_dispatch_thr_to_tx(thread_ctx,
-		&finish_processing_lua_reqs_in_tx);
+	call_in_tx_finish_processing_lua_reqs(thread_ctx);
 #ifdef USE_LIBUV
 	uv_run(&thread_ctx->loop, UV_RUN_DEFAULT);
 #else /* USE_LIBUV */
@@ -4017,7 +4104,7 @@ reap_terminating_threads_ungracefully(void)
 		thread_ctx_t *const thread_ctx = &conf.thread_ctxs[thr_idx];
 		if (thread_ctx->thread_finished)
 			continue;
-		stubborn_dispatch_thr_from_tx(thread_ctx, &become_ungraceful);
+		call_in_http_thr_with_thread_ctx(become_ungraceful, thread_ctx);
 	}
 
 	for (thr_idx = conf.num_threads - 1;
@@ -4156,7 +4243,7 @@ flush_tx_lua_handlers(thread_ctx_t *thread_ctx)
 static void
 flush_http_lua_handlers(thread_ctx_t *thread_ctx)
 {
-	stubborn_dispatch_thr_to_tx(thread_ctx, flush_tx_lua_handlers);
+	call_in_tx_with_thread_ctx(flush_tx_lua_handlers, thread_ctx);
 }
 
 enum {
@@ -4191,8 +4278,8 @@ flush_lua_ref_handlers(void)
 	for (thr_idx = 0; thr_idx < conf.num_threads; ++thr_idx) {
 		thread_ctx_t *const thread_ctx =  &conf.thread_ctxs[thr_idx];
 		assert(!thread_ctx->http_and_tx_lua_handlers_flushed);
-		stubborn_dispatch_thr_from_tx(thread_ctx,
-			&flush_http_lua_handlers);
+		call_in_http_thr_with_thread_ctx(flush_http_lua_handlers,
+			thread_ctx);
 	}
 	for (thr_idx = 0; thr_idx < conf.num_threads; ++thr_idx) {
 		thread_ctx_t *const thread_ctx =  &conf.thread_ctxs[thr_idx];
@@ -5077,10 +5164,6 @@ debug_wait_process(lua_State *L)
 	enum {
 		LUA_STACK_DEBUG_IDX_PID = 1,
 	};
-	static struct sockaddr_un addr = {
-		.sun_family = AF_UNIX,
-		.sun_path = REAPER_SOCKET_NAME,
-	};
 	const char *lerr = NULL;
 	if (lua_gettop(L) < 1) {
 		lerr = "No parameters specified";
@@ -5117,8 +5200,8 @@ retry_everything:
 		lerr = "socket() failed";
 		goto error_cant_socket;
 	}
-	if (connect(reaper_client_fd, (struct sockaddr *)&addr,
-	    sizeof(addr)) < 0) {
+	if (connect(reaper_client_fd, (struct sockaddr *)&reaper_addr,
+	    sizeof(reaper_addr)) < 0) {
 		lerr = "connect() to process_helper failed";
 		goto error_cant_connect;
 	}
@@ -5209,6 +5292,11 @@ static const struct luaL_Reg mylib[] = {
 int
 luaopen_httpng_c(lua_State *L)
 {
+	/* Can't use "designated initializer" in C89 or C++. */
+	reaper_addr.sun_family = AF_UNIX;
+	memcpy(reaper_addr.sun_path, REAPER_SOCKET_NAME,
+		sizeof(REAPER_SOCKET_NAME));
+
 	luaL_newlib(L, mylib);
 	(void)luaL_dostring(L, "return require 'httpng.router'");
 	lua_setfield(L, -2, "router");

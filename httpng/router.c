@@ -243,7 +243,8 @@ req_handler(lua_h2o_handler_t *self, h2o_req_t *req)
 		return 0;
 	state_t state;
 	unsigned router_data_len_max;
-	state.counter_ptr = get_router_data(shuttle, &router_data_len_max);
+	state.counter_ptr = (typeof(state.counter_ptr))
+		get_router_data(shuttle, &router_data_len_max);
 	if (router_data_len_max < sizeof(*state.counter_ptr)) {
 	too_small_shuttle_size:
 		/* shuttle_size is too small.
@@ -262,14 +263,14 @@ req_handler(lua_h2o_handler_t *self, h2o_req_t *req)
 	*state.counter_ptr = 0;
 	state.bytes_remain =
 		router_data_len_max - sizeof(*state.counter_ptr);
-	router_t *const router = self->c_handler_param;
+	router_t *const router = (router_t *)self->c_handler_param;
 
 	const size_t path_only_len = (req->query_at == SIZE_MAX) ?
 		req->path.len : req->query_at;
 
 	const char *const path = req->path.base;
 	const size_t count = router->entries_count;
-	const char *pos = router->entries;
+	const char *pos = (char *)router->entries;
 	size_t idx;
 	for (idx = 0; idx < count; ++idx) {
 		const entry_header_t *const entry = (entry_header_t *)pos;
@@ -451,7 +452,7 @@ collect(lua_State *L)
 	const void *pos = self->entries;
 	size_t idx;
 	for (idx = 0; idx < count; ++idx) {
-		const entry_header_t *const entry = pos;
+		const entry_header_t *const entry = (entry_header_t *)pos;
 		luaL_unref(L, LUA_REGISTRYINDEX, entry->handler_ref);
 		pos = (char *)pos + (entry->len + sizeof(entry_header_t) * 2
 			- 1) / sizeof(entry_header_t) * sizeof(entry_header_t);
@@ -472,12 +473,13 @@ create_router(lua_State *L)
 	lua_createtable(L, 0, 5);
 	lua_pushcfunction(L, route);
 	lua_setfield(L, -2, "route");
-	lua_pushlightuserdata(L, req_handler);
+	lua_pushlightuserdata(L, (void *)req_handler);
 	lua_setfield(L, -2, ROUTER_C_HANDLER_FIELD_NAME);
-	lua_pushlightuserdata(L, fill_router_data);
+	lua_pushlightuserdata(L, (void *)fill_router_data);
 	lua_setfield(L, -2, ROUTER_FILL_ROUTER_DATA_FIELD_NAME);
 
-	router_t *const router = lua_newuserdata(L, sizeof(*router));
+	router_t *const router =
+		(router_t *)lua_newuserdata(L, sizeof(*router));
 	if (router == NULL)
 		return luaL_error(L, "no memory");
 	lua_rawgeti(L, LUA_REGISTRYINDEX, metatable_ref);

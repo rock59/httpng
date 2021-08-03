@@ -359,10 +359,10 @@ typedef struct {
 		lua_first_request_only_t req;
 		lua_response_struct_t resp;
 	} un; /* Must be last member of struct. */
-} lua_response_t;
+} lua_handler_state_t;
 
 typedef void shuttle_func_t(shuttle_t *);
-typedef void lua_response_func_t(lua_response_t *);
+typedef void lua_handler_state_func_t(lua_handler_state_t *);
 typedef void recv_data_func_t(recv_data_t *);
 typedef void thread_ctx_func_t(thread_ctx_t *);
 typedef int lua_handler_func_t(lua_h2o_handler_t *, h2o_req_t *);
@@ -441,7 +441,7 @@ static const char msg_cant_switch_ssl_ctx[] =
 extern void free_shuttle(shuttle_t *);
 
 extern shuttle_t *prepare_shuttle2(h2o_req_t *);
-static void fill_http_headers(lua_State *L, lua_response_t *response,
+static void fill_http_headers(lua_State *L, lua_handler_state_t *state,
 	int param_lua_idx);
 
 /* Called when dispatch must not fail */
@@ -583,9 +583,9 @@ my_lua_tonumberx(lua_State *L, int idx, int *ok)
 static inline shuttle_t *
 get_shuttle_from_generator_lua(h2o_generator_t *generator)
 {
-	lua_response_t *const response = container_of(generator,
-		lua_response_t, un.resp.any.generator);
-	return (shuttle_t *)((char *)response - offsetof(shuttle_t, payload));
+	lua_handler_state_t *const state = container_of(generator,
+		lua_handler_state_t, un.resp.any.generator);
+	return (shuttle_t *)((char *)state - offsetof(shuttle_t, payload));
 }
 
 /* Launched in TX thread. */
@@ -618,28 +618,29 @@ stubborn_dispatch_uni(struct xtm_queue *queue, void *func, void *param)
 /* Can be launched in TX thread or HTTP server thread.
  * Called when dispatch must not fail. */
 static inline void
-call_via_xtm_with_lua_response(struct xtm_queue *queue,
-	void (*func)(lua_response_t *), lua_response_t *param)
+call_via_xtm_with_lua_handler_state(struct xtm_queue *queue,
+	lua_handler_state_func_t *func, lua_handler_state_t *param)
 {
 	call_via_xtm(queue, (void *)func, param);
 }
 
 /* Launched in TX thread. */
 static inline void
-call_in_http_thr_with_lua_response(lua_response_func_t *func,
-	lua_response_t *response)
+call_in_http_thr_with_lua_handler_state(lua_handler_state_func_t *func,
+	lua_handler_state_t *state)
 {
 	shuttle_t *const shuttle =
-		my_container_of(response, shuttle_t, payload);
-	call_via_xtm_with_lua_response(shuttle->thread_ctx->queue_from_tx,
-		func, response);
+		my_container_of(state, shuttle_t, payload);
+	call_via_xtm_with_lua_handler_state(shuttle->thread_ctx->queue_from_tx,
+		func, state);
 }
 
 /* Launched in HTTP(S) server thread. */
 static inline void
-call_in_tx_with_lua_response(lua_response_func_t *func, lua_response_t *param)
+call_in_tx_with_lua_handler_state(lua_handler_state_func_t *func,
+	lua_handler_state_t *param)
 {
-	call_via_xtm_with_lua_response(get_queue_to_tx(), func, param);
+	call_via_xtm_with_lua_handler_state(get_queue_to_tx(), func, param);
 }
 
 /* Can be launched in TX thread or HTTP server thread.
@@ -752,7 +753,8 @@ free_shuttle_from_tx(shuttle_t *shuttle)
 static inline void
 free_lua_shuttle_from_tx(shuttle_t *shuttle)
 {
-	assert(!((lua_response_t *)&shuttle->payload)->upgraded_to_websocket);
+	assert(!((lua_handler_state_t *)&shuttle->payload)
+		->upgraded_to_websocket);
 	free_shuttle_from_tx(shuttle);
 }
 #endif /* SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD */
@@ -761,7 +763,8 @@ free_lua_shuttle_from_tx(shuttle_t *shuttle)
 static inline void
 free_lua_shuttle_from_tx_in_http_thr(shuttle_t *shuttle)
 {
-	assert(!((lua_response_t *)&shuttle->payload)->upgraded_to_websocket);
+	assert(!((lua_handler_state_t *)&shuttle->payload)
+		->upgraded_to_websocket);
 	free_shuttle_from_tx_in_http_thr(shuttle);
 }
 
@@ -772,8 +775,9 @@ free_cancelled_lua_not_ws_shuttle_from_tx(shuttle_t *shuttle)
 #ifdef SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD
 	free_shuttle_from_tx_in_http_thr(shuttle);
 #else /* SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD */
-	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
-	if (response->sent_something)
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)&shuttle->payload;
+	if (state->sent_something)
 		/* FIXME: We may check that all send operations has already
 		 * been executed and skip going into HTTP server thread
 		 * but this would made code more complex and require barriers.
@@ -789,17 +793,18 @@ free_cancelled_lua_not_ws_shuttle_from_tx(shuttle_t *shuttle)
 static inline void
 free_lua_websocket_shuttle_from_tx(shuttle_t *shuttle)
 {
-	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
-	assert(response->upgraded_to_websocket);
-	if (response->recv_fiber != NULL) {
-		response->is_recv_fiber_cancelled = true;
-		assert(response->is_recv_fiber_waiting);
-		fiber_wakeup(response->recv_fiber);
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)&shuttle->payload;
+	assert(state->upgraded_to_websocket);
+	if (state->recv_fiber != NULL) {
+		state->is_recv_fiber_cancelled = true;
+		assert(state->is_recv_fiber_waiting);
+		fiber_wakeup(state->recv_fiber);
 		fiber_yield();
 		struct lua_State *const L = luaT_state();
 		luaL_unref(L, LUA_REGISTRYINDEX,
-			response->lua_recv_handler_ref);
-		luaL_unref(L, LUA_REGISTRYINDEX, response->lua_recv_state_ref);
+			state->lua_recv_handler_ref);
+		luaL_unref(L, LUA_REGISTRYINDEX, state->lua_recv_state_ref);
 	}
 #ifdef SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD
 	call_in_http_thr_with_shuttle(free_lua_websocket_shuttle_internal,
@@ -843,23 +848,24 @@ free_lua_websocket_recv_data_from_tx(recv_data_t *recv_data)
 static void
 cancel_processing_lua_req_in_tx(shuttle_t *shuttle)
 {
-	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
-	assert(!response->upgraded_to_websocket);
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)&shuttle->payload;
+	assert(!state->upgraded_to_websocket);
 
 	/* We do not use fiber_cancel() because it causes exception
 	 * in Lua code so Lua handler have to use pcall() and even
 	 * that is not 100% guarantee because such exception
 	 * can theoretically happen before pcall().
 	 * Also we have to unref Lua state. */
-	if (response->waiter != NULL) {
-		assert(!response->fiber_done);
-		response->cancelled = true;
-		fiber_wakeup(response->waiter->fiber);
-	} else if (response->fiber_done) {
-		assert(!response->cancelled);
+	if (state->waiter != NULL) {
+		assert(!state->fiber_done);
+		state->cancelled = true;
+		fiber_wakeup(state->waiter->fiber);
+	} else if (state->fiber_done) {
+		assert(!state->cancelled);
 		free_cancelled_lua_not_ws_shuttle_from_tx(shuttle);
 	} else {
-		response->cancelled = true;
+		state->cancelled = true;
 		; /* Fiber would clean up because we have set cancelled=true */
 	}
 }
@@ -868,8 +874,9 @@ cancel_processing_lua_req_in_tx(shuttle_t *shuttle)
 static void
 free_shuttle_lua(shuttle_t *shuttle)
 {
-	lua_response_t *const response = (lua_response_t *)(&shuttle->payload);
-	if (!response->upgraded_to_websocket) {
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)(&shuttle->payload);
+	if (!state->upgraded_to_websocket) {
 		shuttle->disposed = true;
 		call_in_tx_with_shuttle(cancel_processing_lua_req_in_tx,
 			shuttle);
@@ -878,21 +885,21 @@ free_shuttle_lua(shuttle_t *shuttle)
 
 /* Launched in TX thread. */
 static void
-continue_processing_lua_req_in_tx(lua_response_t *response)
+continue_processing_lua_req_in_tx(lua_handler_state_t *state)
 {
-	assert(response->fiber != NULL);
-	assert(!response->fiber_done);
-	assert(response->waiter != NULL);
-	assert(response->waiter->fiber != NULL);
-	fiber_wakeup(response->waiter->fiber);
+	assert(state->fiber != NULL);
+	assert(!state->fiber_done);
+	assert(state->waiter != NULL);
+	assert(state->waiter->fiber != NULL);
+	fiber_wakeup(state->waiter->fiber);
 }
 
 /* Launched in TX thread. */
 static inline void
-call_in_tx_continue_processing_lua_req(lua_response_t *response)
+call_in_tx_continue_processing_lua_req(lua_handler_state_t *state)
 {
-	call_in_tx_with_lua_response(continue_processing_lua_req_in_tx,
-		response);
+	call_in_tx_with_lua_handler_state(continue_processing_lua_req_in_tx,
+		state);
 }
 
 /* Launched in HTTP server thread when H2O has sent everything
@@ -902,17 +909,17 @@ proceed_sending_lua(h2o_generator_t *self, h2o_req_t *req)
 {
 	shuttle_t *const shuttle = get_shuttle_from_generator_lua(self);
 	call_in_tx_continue_processing_lua_req(
-		(lua_response_t *)&shuttle->payload);
+		(lua_handler_state_t *)&shuttle->payload);
 }
 
 /* Launched in HTTP server thread. */
 static inline void
-send_lua(h2o_req_t *req, lua_response_t *const response)
+send_lua(h2o_req_t *req, lua_handler_state_t *const state)
 {
 	h2o_iovec_t buf;
-	buf.base = (char *)response->un.resp.any.payload;
-	buf.len = response->un.resp.any.payload_len;
-	h2o_send(req, &buf, 1, response->un.resp.any.is_last_send
+	buf.base = (char *)state->un.resp.any.payload;
+	buf.len = state->un.resp.any.payload_len;
+	h2o_send(req, &buf, 1, state->un.resp.any.is_last_send
 		? H2O_SEND_STATE_FINAL : H2O_SEND_STATE_IN_PROGRESS);
 }
 
@@ -923,15 +930,16 @@ postprocess_lua_req_first(shuttle_t *shuttle)
 {
 	if (shuttle->disposed)
 		return;
-	lua_response_t *const response = (lua_response_t *)(&shuttle->payload);
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)(&shuttle->payload);
 	h2o_req_t *const req = shuttle->never_access_this_req_from_tx_thread;
-	req->res.status = response->un.resp.first.http_code;
+	req->res.status = state->un.resp.first.http_code;
 	req->res.reason = "OK"; /* FIXME: Customizable? */
-	const unsigned num_headers = response->un.resp.first.num_headers;
+	const unsigned num_headers = state->un.resp.first.num_headers;
 	unsigned header_idx;
 	for (header_idx = 0; header_idx < num_headers; ++header_idx) {
 		const http_header_entry_t *const header =
-			&response->un.resp.first.headers[header_idx];
+			&state->un.resp.first.headers[header_idx];
 		h2o_add_header_by_str(&req->pool, &req->res.headers,
 			header->name, header->name_len,
 
@@ -943,16 +951,16 @@ postprocess_lua_req_first(shuttle_t *shuttle)
 			header->value, header->value_len);
 	}
 
-	response->un.resp.any.generator = (h2o_generator_t){
+	state->un.resp.any.generator = (h2o_generator_t){
 		proceed_sending_lua,
 
 		/* Do not use stop_sending, we handle everything
 		 * in free_shuttle_lua(). */
 		NULL
 	};
-	req->res.content_length = response->un.resp.first.content_length;
-	h2o_start_response(req, &response->un.resp.any.generator);
-	send_lua(req, response);
+	req->res.content_length = state->un.resp.first.content_length;
+	h2o_start_response(req, &state->un.resp.any.generator);
+	send_lua(req, state);
 }
 
 /* Launched in TX thread. */
@@ -966,11 +974,12 @@ call_in_http_thr_postprocess_lua_req_first(shuttle_t *shuttle)
 static void
 postprocess_lua_req_others(shuttle_t *shuttle)
 {
-	lua_response_t *const response = (lua_response_t *)(&shuttle->payload);
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)(&shuttle->payload);
 	if (shuttle->disposed)
 		return;
 	h2o_req_t *const req = shuttle->never_access_this_req_from_tx_thread;
-	send_lua(req, response);
+	send_lua(req, state);
 }
 
 /* Launched in TX thread. */
@@ -982,15 +991,15 @@ call_in_http_thr_postprocess_lua_req_others(shuttle_t *shuttle)
 
 /* Launched in TX thread. */
 static inline void
-add_http_header_to_lua_response(lua_first_response_only_t *response,
+add_http_header_to_lua_response(lua_first_response_only_t *state,
 	const char *key, size_t key_len,
 	const char *value, size_t value_len)
 {
-	if (response->num_headers >= conf.max_headers_lua)
+	if (state->num_headers >= conf.max_headers_lua)
 		/* FIXME: Misconfiguration, should we log something? */
 		return;
 
-	response->headers[response->num_headers++] = (http_header_entry_t)
+	state->headers[state->num_headers++] = (http_header_entry_t)
 		{key, value, (unsigned)key_len, (unsigned)value_len};
 }
 
@@ -998,15 +1007,15 @@ add_http_header_to_lua_response(lua_first_response_only_t *response,
  * Makes sure earlier queued sends to HTTP server thread are done
  * OR cancellation request is received. */
 static void
-take_shuttle_ownership_lua(lua_response_t *response)
+take_shuttle_ownership_lua(lua_handler_state_t *state)
 {
-	if (response->waiter == NULL)
+	if (state->waiter == NULL)
 		return;
 
 	/* Other fiber(s) are already waiting for shuttle return or taking
 	 * ownership, add ourself into tail of waiting list. */
 	waiter_t waiter = { .next = NULL, .fiber = fiber_self() };
-	waiter_t *last_waiter = response->waiter;
+	waiter_t *last_waiter = state->waiter;
 	/* FIXME: It may be more efficient to use double-linked list
 	 * if we expect a lot of competing fibers. */
 	while (last_waiter->next != NULL)
@@ -1020,26 +1029,26 @@ take_shuttle_ownership_lua(lua_response_t *response)
  * and calling us.
  * N. b.: We may have been awoken by cancellation request. */
 static inline void
-wait_for_lua_shuttle_return(lua_response_t *response)
+wait_for_lua_shuttle_return(lua_handler_state_t *state)
 {
 	/* Add us into head of waiting list. */
-	waiter_t waiter = { .next = response->waiter, .fiber = fiber_self() };
-	response->waiter = &waiter;
+	waiter_t waiter = { .next = state->waiter, .fiber = fiber_self() };
+	state->waiter = &waiter;
 	fiber_yield();
-	assert(response->waiter == &waiter);
-	response->waiter = waiter.next;
-	if (response->waiter) {
-		struct fiber *fiber = response->waiter->fiber;
-		response->waiter = response->waiter->next;
+	assert(state->waiter == &waiter);
+	state->waiter = waiter.next;
+	if (state->waiter) {
+		struct fiber *fiber = state->waiter->fiber;
+		state->waiter = state->waiter->next;
 		fiber_wakeup(fiber);
 	}
 }
 
 /* Launched in TX thread. */
 static inline int
-get_default_http_code(lua_response_t *response)
+get_default_http_code(lua_handler_state_t *state)
 {
-	assert(!response->sent_something);
+	assert(!state->sent_something);
 	return 200; /* FIXME: Could differ depending on HTTP request type. */
 }
 
@@ -1057,9 +1066,10 @@ payload_writer_write(lua_State *L)
 		return luaL_error(L, "shuttle is invalid");
 	shuttle_t *const shuttle = (shuttle_t *)lua_touserdata(L, -1);
 
-	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
-	take_shuttle_ownership_lua(response);
-	if (response->cancelled) {
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)&shuttle->payload;
+	take_shuttle_ownership_lua(state);
+	if (state->cancelled) {
 		/* Returning Lua true because connection has already
 		 * been closed. */
 		lua_pushboolean(L, true);
@@ -1067,8 +1077,8 @@ payload_writer_write(lua_State *L)
 	}
 
 	size_t payload_len;
-	response->un.resp.any.payload = lua_tolstring(L, 2, &payload_len);
-	response->un.resp.any.payload_len = payload_len;
+	state->un.resp.any.payload = lua_tolstring(L, 2, &payload_len);
+	state->un.resp.any.payload_len = payload_len;
 
 	bool is_last;
 	if (num_params >= 3)
@@ -1076,31 +1086,31 @@ payload_writer_write(lua_State *L)
 	else
 		is_last = false;
 
-	response->un.resp.any.is_last_send = is_last;
-	if (!response->sent_something) {
-		response->un.resp.first.http_code =
-			get_default_http_code(response);
+	state->un.resp.any.is_last_send = is_last;
+	if (!state->sent_something) {
+		state->un.resp.first.http_code =
+			get_default_http_code(state);
 
 		lua_getfield(L, 1, "headers");
 		const unsigned headers_lua_index = num_params + 1 + 1;
-		fill_http_headers(L, response, headers_lua_index);
+		fill_http_headers(L, state, headers_lua_index);
 
-		response->sent_something = true;
+		state->sent_something = true;
 		call_in_http_thr_postprocess_lua_req_first(shuttle);
 	} else
 		call_in_http_thr_postprocess_lua_req_others(shuttle);
-	wait_for_lua_shuttle_return(response);
+	wait_for_lua_shuttle_return(state);
 
 	/* Returning Lua true if connection has already been closed. */
-	lua_pushboolean(L, response->cancelled);
+	lua_pushboolean(L, state->cancelled);
 	return 1;
 }
 
 /* Launched in TX thread. */
 static void
-fill_http_headers(lua_State *L, lua_response_t *response, int param_lua_idx)
+fill_http_headers(lua_State *L, lua_handler_state_t *state, int param_lua_idx)
 {
-	response->un.resp.first.content_length =
+	state->un.resp.first.content_length =
 		H2O_CONTENT_LENGTH_UNSPECIFIED;
 	if (lua_isnil(L, param_lua_idx))
 		return;
@@ -1123,16 +1133,16 @@ fill_http_headers(lua_State *L, lua_response_t *response, int param_lua_idx)
 			const long long candidate = strtoll(temp, NULL, 10);
 			if (errno)
 				add_http_header_to_lua_response(
-					&response->un.resp.first,
+					&state->un.resp.first,
 					key, key_len, value, value_len);
 			else
 				/* h2o would add this header
 				 * and disable chunked. */
-				response->un.resp.first.content_length =
+				state->un.resp.first.content_length =
 					candidate;
 		} else
 			add_http_header_to_lua_response(
-				&response->un.resp.first,
+				&state->un.resp.first,
 				key, key_len, value, value_len);
 
 		/* Remove value, keep key for next iteration. */
@@ -1142,13 +1152,13 @@ fill_http_headers(lua_State *L, lua_response_t *response, int param_lua_idx)
 
 /* Launched in TX thread */
 static inline void
-set_no_payload(lua_response_t *response)
+set_no_payload(lua_handler_state_t *state)
 {
 	/* Pointer can't be garbage even with 0 len,
 	 * w/o HTTPS libh2o passes it to low level OS functions
 	 * which are not smart enough. */
-	response->un.resp.any.payload = NULL;
-	response->un.resp.any.payload_len = 0;
+	state->un.resp.any.payload = NULL;
+	state->un.resp.any.payload_len = 0;
 }
 
 /* Launched in TX thread */
@@ -1172,11 +1182,12 @@ header_writer_write_header(lua_State *L)
 	else
 		is_last = false;
 
-	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
-	take_shuttle_ownership_lua(response);
-	if (response->sent_something)
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)&shuttle->payload;
+	take_shuttle_ownership_lua(state);
+	if (state->sent_something)
 		return luaL_error(L, "Handler has already written header");
-	if (response->cancelled) {
+	if (state->cancelled) {
 		/* Can't send anything, connection has been closed.
 		 * Returning Lua true because connection has already
 		 * been closed. */
@@ -1185,7 +1196,7 @@ header_writer_write_header(lua_State *L)
 	}
 
 	int is_integer;
-	response->un.resp.first.http_code =
+	state->un.resp.first.http_code =
 		my_lua_tointegerx(L, 2, &is_integer);
 	if (!is_integer)
 		return luaL_error(L, "HTTP code is not an integer");
@@ -1197,33 +1208,33 @@ header_writer_write_header(lua_State *L)
 		lua_getfield(L, 1, "headers");
 		headers_lua_index = num_params + 1 + 1;
 	}
-	fill_http_headers(L, response, headers_lua_index);
+	fill_http_headers(L, state, headers_lua_index);
 
 	if (num_params >= 4) {
 		size_t payload_len;
-		response->un.resp.any.payload =
+		state->un.resp.any.payload =
 			lua_tolstring(L, 4, &payload_len);
-		response->un.resp.any.payload_len = payload_len;
+		state->un.resp.any.payload_len = payload_len;
 	} else
-		set_no_payload(response);
+		set_no_payload(state);
 
-	response->un.resp.any.is_last_send = is_last;
-	response->sent_something = true;
+	state->un.resp.any.is_last_send = is_last;
+	state->sent_something = true;
 	call_in_http_thr_postprocess_lua_req_first(shuttle);
-	wait_for_lua_shuttle_return(response);
+	wait_for_lua_shuttle_return(state);
 
 	/* Returning Lua true if connection has already been closed. */
-	lua_pushboolean(L, response->cancelled);
+	lua_pushboolean(L, state->cancelled);
 	return 1;
 }
 
 /* Launched in TX thread. */
 static void
-cancel_processing_lua_websocket_in_tx(lua_response_t *response)
+cancel_processing_lua_websocket_in_tx(lua_handler_state_t *state)
 {
-	assert(response->fiber != NULL);
-	assert(!response->fiber_done);
-	response->cancelled = true;
+	assert(state->fiber != NULL);
+	assert(!state->fiber_done);
+	state->cancelled = true;
 }
 
 /* Can be launched in TX thread or HTTP server thread. */
@@ -1239,20 +1250,21 @@ process_lua_websocket_received_data_in_tx(recv_data_t *recv_data)
 {
 	shuttle_t *const shuttle = recv_data->parent_shuttle;
 	assert(shuttle != NULL);
-	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
-	assert(response->fiber != NULL);
-	assert(!response->fiber_done);
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)&shuttle->payload;
+	assert(state->fiber != NULL);
+	assert(!state->fiber_done);
 
 	/* FIXME: Should we do this check in HTTP server thread? */
-	if (response->recv_fiber != NULL) {
-		if (response->is_recv_fiber_waiting) {
-			response->recv_data = recv_data;
-			fiber_wakeup(response->recv_fiber);
+	if (state->recv_fiber != NULL) {
+		if (state->is_recv_fiber_waiting) {
+			state->recv_data = recv_data;
+			fiber_wakeup(state->recv_fiber);
 			fiber_yield();
 		} else
 			fprintf(stderr, "User WebSocket recv handler for "
 				"\"\%s\" is NOT allowed to yield, data has "
-				"been lost\n", response->site_path);
+				"been lost\n", state->site_path);
 	} else
 		free_lua_websocket_recv_data_from_tx(recv_data);
 }
@@ -1266,20 +1278,21 @@ websocket_msg_callback(h2o_websocket_conn_t *conn,
 	if (arg == NULL) {
 	do_close:
 		;
-		lua_response_t *const response =
-			(lua_response_t *)&shuttle->payload;
-		assert(conn == response->ws_conn);
+		lua_handler_state_t *const state =
+			(lua_handler_state_t *)&shuttle->payload;
+		assert(conn == state->ws_conn);
 		h2o_websocket_close(conn);
-		response->ws_conn = NULL;
-		call_in_tx_with_lua_response(
-			cancel_processing_lua_websocket_in_tx, response);
+		state->ws_conn = NULL;
+		call_in_tx_with_lua_handler_state(
+			cancel_processing_lua_websocket_in_tx, state);
 		return;
 	}
 
 	if (wslay_is_ctrl_frame(arg->opcode))
 		return;
 
-	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)&shuttle->payload;
 	size_t bytes_remain = arg->msg_length;
 	const unsigned char *pos = arg->msg;
 	while (1) {
@@ -1297,7 +1310,7 @@ websocket_msg_callback(h2o_websocket_conn_t *conn,
 			bytes_to_send);
 		call_in_tx_with_recv_data(
 			process_lua_websocket_received_data_in_tx, recv_data);
-		if (response->ws_conn == NULL)
+		if (state->ws_conn == NULL)
 			/* Handler has closed connection already. */
 			break;
 		if (!(bytes_remain -= bytes_to_send))
@@ -1310,16 +1323,17 @@ websocket_msg_callback(h2o_websocket_conn_t *conn,
 static void
 postprocess_lua_req_upgrade_to_websocket(shuttle_t *shuttle)
 {
-	lua_response_t *const response = (lua_response_t *)(&shuttle->payload);
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)(&shuttle->payload);
 	if (shuttle->disposed)
 		return;
 	h2o_req_t *const req = shuttle->never_access_this_req_from_tx_thread;
 
-	const unsigned num_headers = response->un.resp.first.num_headers;
+	const unsigned num_headers = state->un.resp.first.num_headers;
 	unsigned header_idx;
 	for (header_idx = 0; header_idx < num_headers; ++header_idx) {
 		const http_header_entry_t *const header =
-			&response->un.resp.first.headers[header_idx];
+			&state->un.resp.first.headers[header_idx];
 		h2o_add_header_by_str(&req->pool, &req->res.headers,
 			header->name, header->name_len,
 			1, /* FIXME: Benchmark whether this faster than 0. */
@@ -1327,28 +1341,28 @@ postprocess_lua_req_upgrade_to_websocket(shuttle_t *shuttle)
 			header->value, header->value_len);
 
 	}
-	response->upgraded_to_websocket = true;
-	response->ws_conn = h2o_upgrade_to_websocket(req,
-		response->ws_client_key, shuttle, websocket_msg_callback);
+	state->upgraded_to_websocket = true;
+	state->ws_conn = h2o_upgrade_to_websocket(req,
+		state->ws_client_key, shuttle, websocket_msg_callback);
 	/* anchor_dispose()/free_shuttle_lua() will be called by h2o. */
-	call_in_tx_continue_processing_lua_req(response);
+	call_in_tx_continue_processing_lua_req(state);
 }
 
 /* Launched in HTTP server thread. */
 static void
-postprocess_lua_req_websocket_send_text(lua_response_t *response)
+postprocess_lua_req_websocket_send_text(lua_handler_state_t *state)
 {
 	/* Do not check shuttle->disposed, this is a WebSocket now. */
 
 	struct wslay_event_msg msgarg = {
 		.opcode = WSLAY_TEXT_FRAME,
-		.msg = (unsigned char *)response->un.resp.any.payload,
-		.msg_length = response->un.resp.any.payload_len,
+		.msg = (unsigned char *)state->un.resp.any.payload,
+		.msg_length = state->un.resp.any.payload_len,
 	};
-	if (wslay_event_queue_msg(response->ws_conn->ws_ctx, &msgarg) ||
-	    wslay_event_send(response->ws_conn->ws_ctx))
-		response->ws_send_failed = true;
-	call_in_tx_continue_processing_lua_req(response);
+	if (wslay_event_queue_msg(state->ws_conn->ws_ctx, &msgarg) ||
+	    wslay_event_send(state->ws_conn->ws_ctx))
+		state->ws_send_failed = true;
+	call_in_tx_continue_processing_lua_req(state);
 }
 
 /* Launched in TX thread. */
@@ -1365,14 +1379,15 @@ websocket_send_text(lua_State *L)
 		return luaL_error(L, "shuttle is invalid");
 	shuttle_t *const shuttle = (shuttle_t *)lua_touserdata(L, -1);
 
-	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
-	if (response->in_recv_handler) {
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)&shuttle->payload;
+	if (state->in_recv_handler) {
 		return luaL_error(L, "User WebSocket recv handler for "
 			"\"%s\" is NOT allowed to call yielding functions",
-			response->site_path);
+			state->site_path);
 	}
-	take_shuttle_ownership_lua(response);
-	if (response->cancelled || response->ws_send_failed) {
+	take_shuttle_ownership_lua(state);
+	if (state->cancelled || state->ws_send_failed) {
 		/* Returning Lua true because connection has already
 		 * been closed or previous send failed. */
 		lua_pushboolean(L, true);
@@ -1380,35 +1395,35 @@ websocket_send_text(lua_State *L)
 	}
 
 	size_t payload_len;
-	response->un.resp.any.payload = lua_tolstring(L, 2, &payload_len);
-	response->un.resp.any.payload_len = payload_len;
+	state->un.resp.any.payload = lua_tolstring(L, 2, &payload_len);
+	state->un.resp.any.payload_len = payload_len;
 
-	call_in_http_thr_with_lua_response(
-		postprocess_lua_req_websocket_send_text, response);
-	wait_for_lua_shuttle_return(response);
+	call_in_http_thr_with_lua_handler_state(
+		postprocess_lua_req_websocket_send_text, state);
+	wait_for_lua_shuttle_return(state);
 
 	/* Returning Lua true if send failed or connection has already
 	 * been closed. */
-	lua_pushboolean(L, response->ws_send_failed || response->cancelled);
+	lua_pushboolean(L, state->ws_send_failed || state->cancelled);
 	return 1;
 }
 
 /* Launched in HTTP server thread. */
 static void
-close_websocket(lua_response_t *const response)
+close_websocket(lua_handler_state_t *const state)
 {
-	if (response->ws_conn != NULL) {
-		h2o_websocket_close(response->ws_conn);
-		response->ws_conn = NULL;
+	if (state->ws_conn != NULL) {
+		h2o_websocket_close(state->ws_conn);
+		state->ws_conn = NULL;
 	}
-	call_in_tx_continue_processing_lua_req(response);
+	call_in_tx_continue_processing_lua_req(state);
 }
 
 /* Launched in TX thread. */
 static inline void
-call_in_tx_close_websocket(lua_response_t *response)
+call_in_tx_close_websocket(lua_handler_state_t *state)
 {
-	call_in_http_thr_with_lua_response(close_websocket, response);
+	call_in_http_thr_with_lua_handler_state(close_websocket, state);
 }
 
 /* Launched in TX thread. */
@@ -1425,19 +1440,20 @@ close_lua_websocket(lua_State *L)
 		return luaL_error(L, "shuttle is invalid");
 	shuttle_t *const shuttle = (shuttle_t *)lua_touserdata(L, -1);
 
-	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
-	if (response->in_recv_handler) {
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)&shuttle->payload;
+	if (state->in_recv_handler) {
 		return luaL_error(L, "User WebSocket recv handler for "
 			"\"%s\" is NOT allowed to call yielding functions",
-			response->site_path);
+			state->site_path);
 	}
-	take_shuttle_ownership_lua(response);
-	if (response->cancelled)
+	take_shuttle_ownership_lua(state);
+	if (state->cancelled)
 		return 0;
 
-	response->cancelled = true;
-	call_in_tx_close_websocket(response);
-	wait_for_lua_shuttle_return(response);
+	state->cancelled = true;
+	call_in_tx_close_websocket(state);
+	wait_for_lua_shuttle_return(state);
 	return 0;
 }
 
@@ -1447,39 +1463,40 @@ lua_websocket_recv_fiber_func(va_list ap)
 {
 	shuttle_t *const shuttle = va_arg(ap, shuttle_t *);
 	lua_State *const L = va_arg(ap, lua_State *);
-	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)&shuttle->payload;
 
 	while (1) {
-		response->is_recv_fiber_waiting = true;
+		state->is_recv_fiber_waiting = true;
 		fiber_yield();
-		if (response->is_recv_fiber_cancelled) {
+		if (state->is_recv_fiber_cancelled) {
 			/* FIXME: Can we leak recv_data? */
-			fiber_wakeup(response->fiber);
+			fiber_wakeup(state->fiber);
 			return 0;
 		}
-		response->is_recv_fiber_waiting = false;
+		state->is_recv_fiber_waiting = false;
 
 		/* User handler function, written in Lua. */
 		lua_rawgeti(L, LUA_REGISTRYINDEX,
-			response->lua_recv_handler_ref);
+			state->lua_recv_handler_ref);
 
-		recv_data_t *const recv_data = response->recv_data;
+		recv_data_t *const recv_data = state->recv_data;
 		assert(recv_data->parent_shuttle == shuttle);
 		/* First param for Lua WebSocket recv handler - data. */
 		lua_pushlstring(L, get_websocket_recv_location(recv_data),
 			recv_data->payload_bytes);
 
 		/* N. b.: WebSocket recv handler is NOT allowed to yield. */
-		response->in_recv_handler = true;
+		state->in_recv_handler = true;
 		if (lua_pcall(L, 1, 0, 0) != LUA_OK)
 			/* FIXME: Should probably log this instead(?).
 			 * Should we stop calling handler? */
 			fprintf(stderr, "User WebSocket recv handler for "
 				"\"\%s\" failed with error \"%s\"\n",
-				response->site_path, lua_tostring(L, -1));
-		response->in_recv_handler = false;
+				state->site_path, lua_tostring(L, -1));
+		state->in_recv_handler = false;
 		free_lua_websocket_recv_data_from_tx(recv_data);
-		fiber_wakeup(response->tx_fiber);
+		fiber_wakeup(state->tx_fiber);
 	}
 
 	return 0;
@@ -1499,12 +1516,13 @@ header_writer_upgrade_to_websocket(lua_State *L)
 		return luaL_error(L, "shuttle is invalid");
 	shuttle_t *const shuttle = (shuttle_t *)lua_touserdata(L, -1);
 
-	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
-	take_shuttle_ownership_lua(response);
-	if (response->sent_something)
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)&shuttle->payload;
+	take_shuttle_ownership_lua(state);
+	if (state->sent_something)
 		return luaL_error(L, "Unable to upgrade to WebSockets "
 			"after sending HTTP headers");
-	if (response->cancelled) {
+	if (state->cancelled) {
 		/* Can't send anything, connection has been closed. */
 		lua_pushnil(L);
 		return 1;
@@ -1520,7 +1538,7 @@ header_writer_upgrade_to_websocket(lua_State *L)
 				lua_tolstring(L, -1, &value_len);
 
 			add_http_header_to_lua_response(
-					&response->un.resp.first,
+					&state->un.resp.first,
 					key, key_len, value, value_len);
 
 			/* Remove value, keep key for next iteration. */
@@ -1530,36 +1548,36 @@ header_writer_upgrade_to_websocket(lua_State *L)
 
 	if (num_params != 3 || lua_isnil(L, 3) ||
 	    lua_type(L, 3) != LUA_TFUNCTION)
-		response->recv_fiber = NULL;
+		state->recv_fiber = NULL;
 	else {
 		lua_pop(L, 1);
-		response->lua_recv_handler_ref =
+		state->lua_recv_handler_ref =
 			luaL_ref(L, LUA_REGISTRYINDEX);
 		struct lua_State *const new_L = lua_newthread(L);
-		response->lua_recv_state_ref = luaL_ref(L, LUA_REGISTRYINDEX);
-		if ((response->recv_fiber =
+		state->lua_recv_state_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+		if ((state->recv_fiber =
 		    fiber_new("HTTP Lua WebSocket recv fiber",
 			    &lua_websocket_recv_fiber_func)) == NULL) {
 			luaL_unref(L, LUA_REGISTRYINDEX,
-				response->lua_recv_handler_ref);
+				state->lua_recv_handler_ref);
 			luaL_unref(L, LUA_REGISTRYINDEX,
-				response->lua_recv_state_ref);
+				state->lua_recv_state_ref);
 			lua_pushnil(L);
 			return 1;
 		}
-		response->is_recv_fiber_waiting = false;
-		response->is_recv_fiber_cancelled = false;
-		fiber_start(response->recv_fiber, shuttle, new_L);
+		state->is_recv_fiber_waiting = false;
+		state->is_recv_fiber_cancelled = false;
+		fiber_start(state->recv_fiber, shuttle, new_L);
 	}
 
-	response->sent_something = true;
-	response->ws_send_failed = false;
-	response->in_recv_handler = false;
+	state->sent_something = true;
+	state->ws_send_failed = false;
+	state->in_recv_handler = false;
 	call_in_http_thr_with_shuttle(postprocess_lua_req_upgrade_to_websocket,
 		shuttle);
-	wait_for_lua_shuttle_return(response);
+	wait_for_lua_shuttle_return(state);
 
-	if (response->cancelled)
+	if (state->cancelled)
 		lua_pushnil(L);
 	else {
 		lua_createtable(L, 0, 3);
@@ -1580,27 +1598,28 @@ retrieve_more_body(shuttle_t *const shuttle)
 {
 	if (shuttle->disposed)
 		return;
-	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
-	assert(response->un.req.is_body_incomplete);
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)&shuttle->payload;
+	assert(state->un.req.is_body_incomplete);
 	const h2o_req_t *const req =
 		shuttle->never_access_this_req_from_tx_thread;
-	assert(response->un.req.offset_within_body < req->entity.len);
+	assert(state->un.req.offset_within_body < req->entity.len);
 	const size_t bytes_still_in_req =
-		req->entity.len - response->un.req.offset_within_body;
+		req->entity.len - state->un.req.offset_within_body;
 	unsigned bytes_to_copy;
-	const unsigned offset = response->un.req.offset_within_body;
+	const unsigned offset = state->un.req.offset_within_body;
 	if (bytes_still_in_req > conf.max_path_len_lua) {
 		bytes_to_copy = conf.max_path_len_lua;
-		response->un.req.offset_within_body += bytes_to_copy;
+		state->un.req.offset_within_body += bytes_to_copy;
 	} else {
 		bytes_to_copy = bytes_still_in_req;
-		response->un.req.is_body_incomplete = false;
+		state->un.req.is_body_incomplete = false;
 	}
-	response->un.req.body_len = bytes_to_copy;
-	memcpy(&response->un.req.buffer, &req->entity.base[offset],
+	state->un.req.body_len = bytes_to_copy;
+	memcpy(&state->un.req.buffer, &req->entity.base[offset],
 		bytes_to_copy);
 
-	call_in_tx_continue_processing_lua_req(response);
+	call_in_tx_continue_processing_lua_req(state);
 }
 #endif /* SUPPORT_SPLITTING_LARGE_BODY */
 
@@ -1617,39 +1636,40 @@ fill_router_data(lua_State *L, const char *path, unsigned data_len, void *data)
 static inline int
 fill_received_headers_and_body(lua_State *L, shuttle_t *shuttle)
 {
-	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
-	assert(!response->sent_something);
-	unsigned current_offset = response->un.req.router_data_len +
-		response->un.req.path_len + response->un.req.authority_len;
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)&shuttle->payload;
+	assert(!state->sent_something);
+	unsigned current_offset = state->un.req.router_data_len +
+		state->un.req.path_len + state->un.req.authority_len;
 	const received_http_header_handle_t *const handles =
-		(received_http_header_handle_t *)&response->un.req.buffer[
+		(received_http_header_handle_t *)&state->un.req.buffer[
 		current_offset];
-	const unsigned num_headers = response->un.req.num_headers;
+	const unsigned num_headers = state->un.req.num_headers;
 	lua_createtable(L, 0, num_headers);
 	current_offset += num_headers * sizeof(received_http_header_handle_t);
 	unsigned header_idx;
 	for (header_idx = 0; header_idx < num_headers; ++header_idx) {
 		const received_http_header_handle_t *const handle =
 			&handles[header_idx];
-		lua_pushlstring(L, &response->un.req.buffer[current_offset +
+		lua_pushlstring(L, &state->un.req.buffer[current_offset +
 			handle->name_size + 1], handle->value_size);
 
 		/* N. b.: it must be NULL-terminated. */
-		lua_setfield(L, -2, &response->un.req.buffer[current_offset]);
+		lua_setfield(L, -2, &state->un.req.buffer[current_offset]);
 
 		current_offset += handle->name_size + 1 + handle->value_size;
 	}
 	lua_setfield(L, -2, "headers");
-	fill_router_data(L, &response->un.req.buffer[
-			response->un.req.router_data_len],
-		response->un.req.router_data_len,
-		&response->un.req.buffer);
+	fill_router_data(L, &state->un.req.buffer[
+			state->un.req.router_data_len],
+		state->un.req.router_data_len,
+		&state->un.req.buffer);
 #ifdef SUPPORT_SPLITTING_LARGE_BODY
-	if (!response->un.req.is_body_incomplete)
+	if (!state->un.req.is_body_incomplete)
 #endif /* SUPPORT_SPLITTING_LARGE_BODY */
 	{
-		lua_pushlstring(L, &response->un.req.buffer[current_offset],
-			response->un.req.body_len);
+		lua_pushlstring(L, &state->un.req.buffer[current_offset],
+			state->un.req.body_len);
 		lua_setfield(L, -2, "body");
 		return 0;
 	}
@@ -1658,34 +1678,34 @@ fill_received_headers_and_body(lua_State *L, shuttle_t *shuttle)
 	/* FIXME: Should use content-length to preallocate enough memory and
 	 * avoid allocations and copying. Or we can just allocate in
 	 * HTTP server thread and pass pointer. */
-	char *body_buf = (char *)malloc(response->un.req.body_len);
+	char *body_buf = (char *)malloc(state->un.req.body_len);
 	if (body_buf == NULL)
 		/* There was memory allocation failure.
 		 * FIXME: Should log this. */
 		return 1;
 
-	memcpy(body_buf, &response->un.req.buffer[current_offset],
-		response->un.req.body_len);
+	memcpy(body_buf, &state->un.req.buffer[current_offset],
+		state->un.req.body_len);
 
-	size_t body_offset = response->un.req.body_len;
+	size_t body_offset = state->un.req.body_len;
 	do {
 		/* FIXME: Not needed on first iteration. */
-		take_shuttle_ownership_lua(response);
-		if (response->cancelled) {
+		take_shuttle_ownership_lua(state);
+		if (state->cancelled) {
 			free(body_buf);
 			return 1;
 		}
 
 		call_in_http_thr_with_shuttle(retrieve_more_body, shuttle);
-		wait_for_lua_shuttle_return(response);
-		if (response->cancelled) {
+		wait_for_lua_shuttle_return(state);
+		if (state->cancelled) {
 			free(body_buf);
 			return 1;
 		}
 
 		{
 			char *const new_body_buf = (char *)realloc(body_buf,
-				body_offset + response->un.req.body_len);
+				body_offset + state->un.req.body_len);
 			if (new_body_buf == NULL) {
 				free(body_buf);
 				/* There was memory allocation failure.
@@ -1694,10 +1714,10 @@ fill_received_headers_and_body(lua_State *L, shuttle_t *shuttle)
 			}
 			body_buf = new_body_buf;
 		}
-		memcpy(&body_buf[body_offset], &response->un.req.buffer,
-			response->un.req.body_len);
-		body_offset += response->un.req.body_len;
-	} while (response->un.req.is_body_incomplete);
+		memcpy(&body_buf[body_offset], &state->un.req.buffer,
+			state->un.req.body_len);
+		body_offset += state->un.req.body_len;
+	} while (state->un.req.is_body_incomplete);
 
 	lua_pushlstring(L, body_buf, body_offset);
 	free(body_buf);
@@ -1710,24 +1730,25 @@ fill_received_headers_and_body(lua_State *L, shuttle_t *shuttle)
 static void
 close_lua_req_internal(lua_State *L, shuttle_t *shuttle)
 {
-	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
-	take_shuttle_ownership_lua(response);
-	if (response->cancelled)
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)&shuttle->payload;
+	take_shuttle_ownership_lua(state);
+	if (state->cancelled)
 		return;
 
-	set_no_payload(response);
-	response->un.resp.any.is_last_send = true;
-	if (response->sent_something)
+	set_no_payload(state);
+	state->un.resp.any.is_last_send = true;
+	if (state->sent_something)
 		call_in_http_thr_postprocess_lua_req_others(shuttle);
 	else {
-		response->un.resp.first.http_code =
-			get_default_http_code(response);
-		response->sent_something = true;
-		response->un.resp.first.content_length =
+		state->un.resp.first.http_code =
+			get_default_http_code(state);
+		state->sent_something = true;
+		state->un.resp.first.content_length =
 			H2O_CONTENT_LENGTH_UNSPECIFIED;
 		call_in_http_thr_postprocess_lua_req_first(shuttle);
 	}
-	wait_for_lua_shuttle_return(response);
+	wait_for_lua_shuttle_return(state);
 }
 
 /* Launched in TX thread. */
@@ -1752,14 +1773,15 @@ static void
 finish_handler_failure_processing(shuttle_func_t *func, shuttle_t *shuttle)
 {
 	call_in_http_thr_with_shuttle(func, shuttle);
-	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
-	wait_for_lua_shuttle_return(response);
-	if (response->cancelled)
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)&shuttle->payload;
+	wait_for_lua_shuttle_return(state);
+	if (state->cancelled)
 		/* There would be no more calls from HTTP server thread,
 		 * must clean up. */
 		free_lua_shuttle_from_tx_in_http_thr(shuttle);
 	else
-		response->fiber_done = true;
+		state->fiber_done = true;
 		/* cancel_processing_lua_req_in_tx() is not yet called,
 		 * it would clean up because we have set fiber_done=true. */
 }
@@ -1768,33 +1790,34 @@ finish_handler_failure_processing(shuttle_func_t *func, shuttle_t *shuttle)
 static inline void
 process_handler_failure_not_ws(shuttle_t *shuttle)
 {
-	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
-	take_shuttle_ownership_lua(response);
-	if (response->cancelled) {
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)&shuttle->payload;
+	take_shuttle_ownership_lua(state);
+	if (state->cancelled) {
 		/* There would be no more calls from HTTP server thread,
 		 * must clean up. */
 		free_cancelled_lua_not_ws_shuttle_from_tx(shuttle);
 		return;
 	}
 
-	response->un.resp.any.is_last_send = true;
+	state->un.resp.any.is_last_send = true;
 	shuttle_func_t *func;
-	if (response->sent_something) {
+	if (state->sent_something) {
 		/* Do not add anything to user output to prevent
 		 * corrupt HTML etc. */
-		set_no_payload(response);
+		set_no_payload(state);
 		func = &postprocess_lua_req_others;
 	} else {
 		static const char key[] = "content-type";
 		static const char value[] = "text/plain; charset=utf-8";
-		add_http_header_to_lua_response(&response->un.resp.first, key,
+		add_http_header_to_lua_response(&state->un.resp.first, key,
 			sizeof(key) - 1, value, sizeof(value) - 1);
 		static const char error_str[] = "Path handler execution error";
-		response->un.resp.first.http_code = 500;
-		response->un.resp.any.payload = error_str;
-		response->un.resp.any.payload_len = sizeof(error_str) - 1;
-		response->un.resp.first.content_length = sizeof(error_str) - 1;
-		response->sent_something = true;
+		state->un.resp.first.http_code = 500;
+		state->un.resp.any.payload = error_str;
+		state->un.resp.any.payload_len = sizeof(error_str) - 1;
+		state->un.resp.first.content_length = sizeof(error_str) - 1;
+		state->sent_something = true;
 		func = &postprocess_lua_req_first;
 	}
 	finish_handler_failure_processing(func, shuttle);
@@ -1804,79 +1827,80 @@ process_handler_failure_not_ws(shuttle_t *shuttle)
 static inline void
 process_handler_success_not_ws_with_send(lua_State *L, shuttle_t *shuttle)
 {
-	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
-	take_shuttle_ownership_lua(response);
-	if (response->cancelled) {
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)&shuttle->payload;
+	take_shuttle_ownership_lua(state);
+	if (state->cancelled) {
 		/* There would be no more calls from HTTP server
 		 * thread, must clean up. */
 		free_cancelled_lua_not_ws_shuttle_from_tx(shuttle);
 		return;
 	}
-	const bool old_sent_something = response->sent_something;
+	const bool old_sent_something = state->sent_something;
 	if (!old_sent_something) {
 		lua_getfield(L, -1, "status");
 		if (lua_isnil(L, -1))
-			response->un.resp.first.http_code =
-				get_default_http_code(response);
+			state->un.resp.first.http_code =
+				get_default_http_code(state);
 		else {
 			int is_integer;
-			response->un.resp.first.http_code =
+			state->un.resp.first.http_code =
 				my_lua_tointegerx(L, -1, &is_integer);
 			if (!is_integer)
-				response->un.resp.first.http_code =
-					get_default_http_code(response);
+				state->un.resp.first.http_code =
+					get_default_http_code(state);
 		}
 		lua_getfield(L, -2, "headers");
-		fill_http_headers(L, response, lua_gettop(L));
+		fill_http_headers(L, state, lua_gettop(L));
 		lua_pop(L, 2); /* headers, status. */
-		response->sent_something = true;
+		state->sent_something = true;
 	}
 
 	lua_getfield(L, -1, "body");
 	if (!lua_isnil(L, -1)) {
 		size_t payload_len;
-		response->un.resp.any.payload =
+		state->un.resp.any.payload =
 			lua_tolstring(L, -1, &payload_len);
-		response->un.resp.any.payload_len = payload_len;
+		state->un.resp.any.payload_len = payload_len;
 	} else
-		set_no_payload(response);
+		set_no_payload(state);
 
-	response->un.resp.any.is_last_send = true;
+	state->un.resp.any.is_last_send = true;
 
 	if (old_sent_something)
 		call_in_http_thr_postprocess_lua_req_others(shuttle);
 	else {
-		response->un.resp.first.content_length =
-			response->un.resp.any.payload_len;
+		state->un.resp.first.content_length =
+			state->un.resp.any.payload_len;
 		call_in_http_thr_postprocess_lua_req_first(shuttle);
 	}
-	wait_for_lua_shuttle_return(response);
-	if (response->cancelled)
+	wait_for_lua_shuttle_return(state);
+	if (state->cancelled)
 		/* There would be no more calls from HTTP
 		 * server thread, must clean up. */
 		free_lua_shuttle_from_tx_in_http_thr(shuttle);
 	else
-		response->fiber_done = true;
+		state->fiber_done = true;
 		/* cancel_processing_lua_req_in_tx() is not yet called,
 		 * it would clean up because we have set fiber_done=true */
 }
 
 /* Launched in TX thread. */
 static inline void
-push_query(lua_State *L, lua_response_t *response)
+push_query(lua_State *L, lua_handler_state_t *state)
 {
-	if (response->un.req.query_at == LUA_QUERY_NONE)
+	if (state->un.req.query_at == LUA_QUERY_NONE)
 		return;
 
-	int64_t query_at = response->un.req.query_at;
-	const unsigned len = response->un.req.path_len;
+	int64_t query_at = state->un.req.query_at;
+	const unsigned len = state->un.req.path_len;
 
 	if ((uint64_t)query_at > (uint64_t)len) {
 		assert(false);
 		return;
 	}
 
-	const char *const path = response->un.req.buffer;
+	const char *const path = state->un.req.buffer;
 	query_at += 1;
 
 	/* N.b.: query_at is 1-based; we also skip '?'. */
@@ -1913,11 +1937,11 @@ call_in_http_thr_tx_done(thread_ctx_t *thread_ctx)
 
 /* Launched in TX thread. */
 static void
-push_addr_table(lua_State *L, lua_response_t *response,
+push_addr_table(lua_State *L, lua_handler_state_t *state,
 	const char *name, ptrdiff_t offset)
 {
 	const struct sockaddr_storage *const ss =
-		(struct sockaddr_storage *)((char *)response + offset);
+		(struct sockaddr_storage *)((char *)state + offset);
 	char tmp[(INET6_ADDRSTRLEN > INET_ADDRSTRLEN
 		? INET6_ADDRSTRLEN : INET_ADDRSTRLEN)];
 	const void *addr;
@@ -1964,20 +1988,21 @@ push_addr_table(lua_State *L, lua_response_t *response,
 static inline void
 process_internal_error(shuttle_t *shuttle)
 {
-	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)&shuttle->payload;
 
-	response->un.resp.first.num_headers = 0;
-	response->un.resp.any.is_last_send = true;
+	state->un.resp.first.num_headers = 0;
+	state->un.resp.any.is_last_send = true;
 	static const char key[] = "content-type";
 	static const char value[] = "text/plain; charset=utf-8";
-	add_http_header_to_lua_response(&response->un.resp.first, key,
+	add_http_header_to_lua_response(&state->un.resp.first, key,
 		sizeof(key) - 1, value, sizeof(value) - 1);
 	static const char error_str[] = "Internal error";
-	response->un.resp.first.http_code = 500;
-	response->un.resp.any.payload = error_str;
-	response->un.resp.any.payload_len = sizeof(error_str) - 1;
-	response->un.resp.first.content_length = sizeof(error_str) - 1;
-	response->sent_something = true;
+	state->un.resp.first.http_code = 500;
+	state->un.resp.any.payload = error_str;
+	state->un.resp.any.payload_len = sizeof(error_str) - 1;
+	state->un.resp.first.content_length = sizeof(error_str) - 1;
+	state->sent_something = true;
 
 	finish_handler_failure_processing(&postprocess_lua_req_first, shuttle);
 }
@@ -1986,17 +2011,18 @@ process_internal_error(shuttle_t *shuttle)
 static inline void
 process_handler_success_not_ws_without_send(lua_State *L, shuttle_t *shuttle)
 {
-	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
-	if (response->un.resp.any.is_last_send) {
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)&shuttle->payload;
+	if (state->un.resp.any.is_last_send) {
 	Done:
-		response->fiber_done = true;
+		state->fiber_done = true;
 		/* cancel_processing_lua_req_in_tx() is not yet called,
 		 * it would clean up because we have set fiber_done=true. */
 		return;
 	}
 
 	close_lua_req_internal(L, shuttle);
-	if (!response->cancelled)
+	if (!state->cancelled)
 		goto Done;
 
 	free_cancelled_lua_not_ws_shuttle_from_tx(shuttle);
@@ -2033,49 +2059,50 @@ lua_fiber_func(va_list ap)
 	shuttle_t *const shuttle = va_arg(ap, shuttle_t *);
 	lua_State *const L = va_arg(ap, lua_State *);
 
-	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)&shuttle->payload;
 	thread_ctx_t *const thread_ctx = shuttle->thread_ctx;
 
 	/* User handler function, written in Lua. */
-	lua_rawgeti(L, LUA_REGISTRYINDEX, response->un.req.lua_handler_ref);
+	lua_rawgeti(L, LUA_REGISTRYINDEX, state->un.req.lua_handler_ref);
 
 	/* First param for Lua handler - req. */
 	lua_createtable(L, 0, 15);
 	lua_pushcfunction(L, router_stash);
 	lua_setfield(L, -2, "stash");
-	lua_pushinteger(L, response->un.req.version_major);
+	lua_pushinteger(L, state->un.req.version_major);
 	lua_setfield(L, -2, "version_major");
-	lua_pushinteger(L, response->un.req.version_minor);
+	lua_pushinteger(L, state->un.req.version_minor);
 	lua_setfield(L, -2, "version_minor");
-	lua_pushlstring(L, &response->un.req.buffer[
-				response->un.req.router_data_len],
-			response->un.req.path_len);
+	lua_pushlstring(L, &state->un.req.buffer[
+				state->un.req.router_data_len],
+			state->un.req.path_len);
 	lua_setfield(L, -2, "path");
-	lua_pushlstring(L, &response->un.req.buffer[
-		response->un.req.router_data_len +
-		response->un.req.path_len], response->un.req.authority_len);
+	lua_pushlstring(L, &state->un.req.buffer[
+		state->un.req.router_data_len +
+		state->un.req.path_len], state->un.req.authority_len);
 	lua_setfield(L, -2, "host");
-	push_query(L, response);
-	lua_pushlstring(L, response->un.req.method,
-		response->un.req.method_len);
+	push_query(L, state);
+	lua_pushlstring(L, state->un.req.method,
+		state->un.req.method_len);
 	lua_setfield(L, -2, "method");
-	lua_pushboolean(L, !!response->un.req.ws_client_key_len);
+	lua_pushboolean(L, !!state->un.req.ws_client_key_len);
 	lua_setfield(L, -2, "is_websocket");
 	lua_pushlightuserdata(L, shuttle);
 	lua_setfield(L, -2, shuttle_field_name);
-	push_addr_table(L, response, "peer", offsetof(lua_response_t, peer));
-	push_addr_table(L, response, "ouraddr",
-		offsetof(lua_response_t, ouraddr));
-	if (response->un.req.is_encrypted) {
+	push_addr_table(L, state, "peer", offsetof(lua_handler_state_t, peer));
+	push_addr_table(L, state, "ouraddr",
+		offsetof(lua_handler_state_t, ouraddr));
+	if (state->un.req.is_encrypted) {
 		lua_pushboolean(L, true);
 		lua_setfield(L, -2, "https");
 	}
-	if (response->un.req.router_ref != LUA_REFNIL) {
-		lua_rawgeti(L, LUA_REGISTRYINDEX, response->un.req.router_ref);
+	if (state->un.req.router_ref != LUA_REFNIL) {
+		lua_rawgeti(L, LUA_REGISTRYINDEX, state->un.req.router_ref);
 		lua_setfield(L, -2, "_used_router");
 	}
 
-	const int lua_state_ref = response->lua_state_ref;
+	const int lua_state_ref = state->lua_state_ref;
 	if (fill_received_headers_and_body(L, shuttle)) {
 		process_internal_error(shuttle);
 		goto Done;
@@ -2083,8 +2110,8 @@ lua_fiber_func(va_list ap)
 
 	/* We have finished parsing request, now can write to response
 	 * (it is union). */
-	response->un.resp.first.num_headers = 0;
-	response->un.resp.any.is_last_send = false;
+	state->un.resp.first.num_headers = 0;
+	state->un.resp.any.is_last_send = false;
 
 	/* Second param for Lua handler - io. */
 	lua_createtable(L, 0, 6);
@@ -2104,37 +2131,37 @@ lua_fiber_func(va_list ap)
 	if (lua_pcall(L, 2, 1, 0) != LUA_OK) {
 		/* FIXME: Should probably log this instead(?) */
 		fprintf(stderr, "User handler for \"%s\" failed with error "
-			"\"%s\"\n", response->site_path, lua_tostring(L, -1));
+			"\"%s\"\n", state->site_path, lua_tostring(L, -1));
 
-		if (response->cancelled) {
+		if (state->cancelled) {
 			/* No point trying to send something, connection
 			 * has already been closed.
 			 * There would be no more calls from HTTP server
 			 * thread, must clean up. */
-			if (response->upgraded_to_websocket)
+			if (state->upgraded_to_websocket)
 				free_lua_websocket_shuttle_from_tx(shuttle);
 			else
 				free_cancelled_lua_not_ws_shuttle_from_tx(shuttle);
-		} else if (response->upgraded_to_websocket) {
-			take_shuttle_ownership_lua(response);
-			call_in_tx_close_websocket(response);
-			wait_for_lua_shuttle_return(response);
+		} else if (state->upgraded_to_websocket) {
+			take_shuttle_ownership_lua(state);
+			call_in_tx_close_websocket(state);
+			wait_for_lua_shuttle_return(state);
 			free_lua_websocket_shuttle_from_tx(shuttle);
 		} else {
 			process_handler_failure_not_ws(shuttle);
 		}
-	} else if (response->cancelled) {
+	} else if (state->cancelled) {
 		/* There would be no more calls from HTTP server thread,
 		 * must clean up. */
-		if (response->upgraded_to_websocket)
+		if (state->upgraded_to_websocket)
 			free_lua_websocket_shuttle_from_tx(shuttle);
 		else
 			free_cancelled_lua_not_ws_shuttle_from_tx(shuttle);
-	} else if (response->upgraded_to_websocket) {
-		take_shuttle_ownership_lua(response);
-		assert(!response->cancelled);
-		call_in_tx_close_websocket(response);
-		wait_for_lua_shuttle_return(response);
+	} else if (state->upgraded_to_websocket) {
+		take_shuttle_ownership_lua(state);
+		assert(!state->cancelled);
+		call_in_tx_close_websocket(state);
+		wait_for_lua_shuttle_return(state);
 		free_lua_websocket_shuttle_from_tx(shuttle);
 	} else if (lua_isnil(L, -1))
 		process_handler_success_not_ws_without_send(L,
@@ -2155,23 +2182,24 @@ Done:
 static void
 process_lua_req_in_tx(shuttle_t *shuttle)
 {
-	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)&shuttle->payload;
 
 #define RETURN_WITH_ERROR(err) \
 	do { \
-		luaL_unref(L, LUA_REGISTRYINDEX, response->lua_state_ref); \
+		luaL_unref(L, LUA_REGISTRYINDEX, state->lua_state_ref); \
 		static const char key[] = "content-type"; \
 		static const char value[] = "text/plain; charset=utf-8"; \
-		response->un.resp.first.num_headers = 0; \
-		add_http_header_to_lua_response(&response->un.resp.first, \
+		state->un.resp.first.num_headers = 0; \
+		add_http_header_to_lua_response(&state->un.resp.first, \
 			key, sizeof(key) - 1, value, sizeof(value) - 1); \
 		static const char error_str[] = err; \
-		response->un.resp.any.is_last_send = true; \
-		response->un.resp.first.http_code = 500; \
-		response->un.resp.any.payload = error_str; \
-		response->un.resp.any.payload_len = sizeof(error_str) - 1; \
-		response->sent_something = true; \
-		response->un.resp.first.content_length = \
+		state->un.resp.any.is_last_send = true; \
+		state->un.resp.first.http_code = 500; \
+		state->un.resp.any.payload = error_str; \
+		state->un.resp.any.payload_len = sizeof(error_str) - 1; \
+		state->sent_something = true; \
+		state->un.resp.first.content_length = \
 			sizeof(error_str) - 1; \
 		call_in_http_thr_postprocess_lua_req_first(shuttle); \
 		return; \
@@ -2179,14 +2207,14 @@ process_lua_req_in_tx(shuttle_t *shuttle)
 
 	struct lua_State *const L = luaT_state();
 	struct lua_State *const new_L = lua_newthread(L);
-	response->lua_state_ref = luaL_ref(L, LUA_REGISTRYINDEX);
-	if ((response->fiber = fiber_new("HTTP Lua fiber", &lua_fiber_func))
+	state->lua_state_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+	if ((state->fiber = fiber_new("HTTP Lua fiber", &lua_fiber_func))
 	    == NULL)
 		RETURN_WITH_ERROR("Failed to create fiber");
-	response->fiber_done = false;
-	response->tx_fiber = fiber_self();
+	state->fiber_done = false;
+	state->tx_fiber = fiber_self();
 	++shuttle->thread_ctx->active_lua_fibers;
-	fiber_start(response->fiber, shuttle, new_L);
+	fiber_start(state->fiber, shuttle, new_L);
 }
 #undef RETURN_WITH_ERROR
 
@@ -2221,9 +2249,10 @@ lua_req_handler_ex(const char *path, h2o_req_t *req,
 	shuttle_t *shuttle, int lua_handler_ref,
 	unsigned router_data_len, int router_ref)
 {
-	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
-	if ((response->un.req.method_len = req->method.len) >
-	    sizeof(response->un.req.method)) {
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)&shuttle->payload;
+	if ((state->un.req.method_len = req->method.len) >
+	    sizeof(state->un.req.method)) {
 		/* Error. */
 		free_shuttle_with_anchor(shuttle);
 		req->res.status = 500;
@@ -2232,9 +2261,9 @@ lua_req_handler_ex(const char *path, h2o_req_t *req,
 		return 0;
 	}
 	unsigned current_offset = router_data_len +
-		(response->un.req.path_len = req->path.len);
-	response->un.req.authority_len = prepare_authority(req);
-	if (current_offset + response->un.req.authority_len >
+		(state->un.req.path_len = req->path.len);
+	state->un.req.authority_len = prepare_authority(req);
+	if (current_offset + state->un.req.authority_len >
 	    conf.max_path_len_lua) {
 		/* Error. */
 		free_shuttle_with_anchor(shuttle);
@@ -2244,40 +2273,40 @@ lua_req_handler_ex(const char *path, h2o_req_t *req,
 		return 0;
 	}
 
-	response->un.req.router_data_len = router_data_len;
+	state->un.req.router_data_len = router_data_len;
 	const char *ws_client_key;
 	(void)h2o_is_websocket_handshake(req, &ws_client_key);
 	if (ws_client_key == NULL)
-		response->un.req.ws_client_key_len = 0;
+		state->un.req.ws_client_key_len = 0;
 	else {
-		response->un.req.ws_client_key_len = WS_CLIENT_KEY_LEN;
-		memcpy(response->ws_client_key, ws_client_key,
-			response->un.req.ws_client_key_len);
+		state->un.req.ws_client_key_len = WS_CLIENT_KEY_LEN;
+		memcpy(state->ws_client_key, ws_client_key,
+			state->un.req.ws_client_key_len);
 	}
 
-	memcpy(response->un.req.method, req->method.base,
-		response->un.req.method_len);
-	memcpy(&response->un.req.buffer[router_data_len], req->path.base,
-		response->un.req.path_len);
-	memcpy(&response->un.req.buffer[current_offset], req->authority.base,
-		response->un.req.authority_len);
-	current_offset += response->un.req.authority_len;
+	memcpy(state->un.req.method, req->method.base,
+		state->un.req.method_len);
+	memcpy(&state->un.req.buffer[router_data_len], req->path.base,
+		state->un.req.path_len);
+	memcpy(&state->un.req.buffer[current_offset], req->authority.base,
+		state->un.req.authority_len);
+	current_offset += state->un.req.authority_len;
 
 	STATIC_ASSERT(LUA_QUERY_NONE <
-		(1ULL << (8 * sizeof(response->un.req.query_at))),
+		(1ULL << (8 * sizeof(state->un.req.query_at))),
 		".query_at field is not large enough to store LUA_QUERY_NONE");
-	response->un.req.query_at = (req->query_at == SIZE_MAX)
+	state->un.req.query_at = (req->query_at == SIZE_MAX)
 		? LUA_QUERY_NONE : req->query_at;
-	response->un.req.version_major = req->version >> 8;
-	response->un.req.version_minor = req->version & 0xFF;
+	state->un.req.version_major = req->version >> 8;
+	state->un.req.version_minor = req->version & 0xFF;
 
 	const h2o_header_t *const headers = req->headers.entries;
 	const size_t num_headers = req->headers.size;
-	/* response->un.req.buffer[] format:
+	/* state->un.req.buffer[] format:
 	 *
 	 * char router_data[router_data_len]
-	 * char path[response->un.req.path.len]
-	 * char authority[response->un.req.authority_len]
+	 * char path[state->un.req.path.len]
+	 * char authority[state->un.req.authority_len]
 	 * FIXME: Alignment to at least to header_offset_t should be here
 	 *   (compatibility/performance).
 	 * received_http_header_handle_t handles[num_headers]
@@ -2302,7 +2331,7 @@ lua_req_handler_ex(const char *path, h2o_req_t *req,
 		return 0;
 	}
 	received_http_header_handle_t *const handles =
-		(received_http_header_handle_t *)&response->un.req.buffer[
+		(received_http_header_handle_t *)&state->un.req.buffer[
 			current_offset];
 	current_offset += num_headers * sizeof(received_http_header_handle_t);
 	unsigned header_idx;
@@ -2315,12 +2344,12 @@ lua_req_handler_ex(const char *path, h2o_req_t *req,
 			&handles[header_idx];
 		handle->name_size = header->name->len;
 		handle->value_size = header->value.len;
-		memcpy(&response->un.req.buffer[current_offset],
+		memcpy(&state->un.req.buffer[current_offset],
 			header->name->base, handle->name_size);
 		current_offset += handle->name_size;
-		response->un.req.buffer[current_offset] = 0;
+		state->un.req.buffer[current_offset] = 0;
 		++current_offset;
-		memcpy(&response->un.req.buffer[current_offset],
+		memcpy(&state->un.req.buffer[current_offset],
 			header->value.base, handle->value_size);
 		current_offset += handle->value_size;
 	}
@@ -2329,9 +2358,9 @@ lua_req_handler_ex(const char *path, h2o_req_t *req,
 	if (current_offset + req->entity.len > max_offset) {
 #ifdef SUPPORT_SPLITTING_LARGE_BODY
 		if (conf.use_body_split) {
-			response->un.req.is_body_incomplete = true;
+			state->un.req.is_body_incomplete = true;
 			body_bytes_to_copy = max_offset - current_offset;
-			response->un.req.offset_within_body =
+			state->un.req.offset_within_body =
 				body_bytes_to_copy;
 		} else
 #endif /* SUPPORT_SPLITTING_LARGE_BODY */
@@ -2346,33 +2375,33 @@ lua_req_handler_ex(const char *path, h2o_req_t *req,
 		}
 	} else {
 #ifdef SUPPORT_SPLITTING_LARGE_BODY
-		response->un.req.is_body_incomplete = false;
+		state->un.req.is_body_incomplete = false;
 #endif /* SUPPORT_SPLITTING_LARGE_BODY */
 		body_bytes_to_copy = req->entity.len;
 	}
 
-	response->un.req.num_headers = num_headers;
-	response->un.req.body_len = body_bytes_to_copy;
-	memcpy(&response->un.req.buffer[current_offset],
+	state->un.req.num_headers = num_headers;
+	state->un.req.body_len = body_bytes_to_copy;
+	memcpy(&state->un.req.buffer[current_offset],
 		req->entity.base, body_bytes_to_copy);
 
-	response->sent_something = false;
-	response->cancelled = false;
-	response->upgraded_to_websocket = false;
-	response->waiter = NULL;
-	response->un.req.lua_handler_ref = lua_handler_ref;
-	response->site_path = path;
-	response->un.req.router_ref = router_ref;
+	state->sent_something = false;
+	state->cancelled = false;
+	state->upgraded_to_websocket = false;
+	state->waiter = NULL;
+	state->un.req.lua_handler_ref = lua_handler_ref;
+	state->site_path = path;
+	state->un.req.router_ref = router_ref;
 
 	socklen_t socklen = req->conn->callbacks->get_peername(req->conn,
-		(struct sockaddr *)&response->peer);
+		(struct sockaddr *)&state->peer);
 	(void)socklen;
-	assert(socklen <= sizeof(response->peer));
+	assert(socklen <= sizeof(state->peer));
 	socklen = req->conn->callbacks->get_sockname(req->conn,
-		(struct sockaddr *)&response->ouraddr);
-	assert(socklen <= sizeof(response->ouraddr));
+		(struct sockaddr *)&state->ouraddr);
+	assert(socklen <= sizeof(state->ouraddr));
 	/* FIXME: Modify libh2o to avoid calling function through pointer */
-	response->un.req.is_encrypted =
+	state->un.req.is_encrypted =
 		(req->conn->callbacks->get_socket(req->conn)->ssl != NULL);
 
 	if (xtm_fun_dispatch(get_queue_to_tx(),
@@ -4646,10 +4675,10 @@ Skip_c_sites:
 	conf.recv_data_size = shuttle_size;
 
 	conf.max_headers_lua = (conf.shuttle_size - sizeof(shuttle_t) -
-		offsetof(lua_response_t, un.resp.first.headers)) /
+		offsetof(lua_handler_state_t, un.resp.first.headers)) /
 		sizeof(http_header_entry_t);
 	conf.max_path_len_lua = conf.shuttle_size - sizeof(shuttle_t) -
-		offsetof(lua_response_t, un.req.buffer);
+		offsetof(lua_handler_state_t, un.req.buffer);
 	conf.max_recv_bytes_lua_websocket = conf.recv_data_size -
 		(uintptr_t)get_websocket_recv_location(NULL);
 
@@ -4772,7 +4801,7 @@ Skip_main_lua_handler:
 		goto no_handlers;
 	}
 	if (lua_site_count != 0 &&
-	    shuttle_size < sizeof(shuttle_t) + sizeof(lua_response_t)) {
+	    shuttle_size < sizeof(shuttle_t) + sizeof(lua_handler_state_t)) {
 		lerr = "shuttle_size is too small for Lua handlers";
 		goto no_handlers;
 	}
@@ -5276,8 +5305,9 @@ void *
 get_router_data(shuttle_t *shuttle, unsigned *max_len)
 {
 	*max_len = conf.max_path_len_lua;
-	lua_response_t *const response = (lua_response_t *)&shuttle->payload;
-	return &response->un.req.buffer;
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)&shuttle->payload;
+	return &state->un.req.buffer;
 }
 
 static const struct luaL_Reg mylib[] = {

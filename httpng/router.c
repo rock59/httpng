@@ -280,7 +280,7 @@ req_handler(lua_h2o_handler_t *self, h2o_req_t *req)
 					(char *)(entry + 1),
 					entry->len, path, path_only_len);
 			if (result == R_MATCH)
-				return lua_req_handler_ex(self->path, req,
+				return lua_req_handler_ex(req,
 					shuttle, entry->handler_ref,
 					router_data_len_max
 					- state.bytes_remain, LUA_REFNIL);
@@ -289,7 +289,7 @@ req_handler(lua_h2o_handler_t *self, h2o_req_t *req)
 		} else {
 		    if (path_only_len == entry->len &&
 			    !memcmp(path, entry + 1, path_only_len))
-			return lua_req_handler_ex(self->path, req, shuttle,
+			return lua_req_handler_ex(req, shuttle,
 				entry->handler_ref, 0, LUA_REFNIL);
 		}
 		pos += (entry->len + sizeof(entry_header_t) * 2

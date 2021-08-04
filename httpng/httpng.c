@@ -827,6 +827,17 @@ free_lua_websocket_recv_data_from_tx(recv_data_t *recv_data)
 }
 
 /* Launched in TX thread. */
+static inline void
+wakeup_waiter(lua_handler_state_t *state)
+{
+	assert(state->waiter != NULL);
+	struct fiber *const fiber = state->waiter->fiber;
+	assert(fiber != NULL);
+	state->waiter = state->waiter->next;
+	fiber_wakeup(fiber);
+}
+
+/* Launched in TX thread. */
 static void
 cancel_processing_lua_req_in_tx(shuttle_t *shuttle)
 {
@@ -842,7 +853,7 @@ cancel_processing_lua_req_in_tx(shuttle_t *shuttle)
 	if (state->waiter != NULL) {
 		assert(!state->fiber_done);
 		state->cancelled = true;
-		fiber_wakeup(state->waiter->fiber);
+		wakeup_waiter(state);
 	} else if (state->fiber_done) {
 		assert(!state->cancelled);
 		free_cancelled_lua_not_ws_shuttle_from_tx(shuttle);
@@ -871,9 +882,7 @@ continue_processing_lua_req_in_tx(lua_handler_state_t *state)
 {
 	assert(state->fiber != NULL);
 	assert(!state->fiber_done);
-	assert(state->waiter != NULL);
-	assert(state->waiter->fiber != NULL);
-	fiber_wakeup(state->waiter->fiber);
+	wakeup_waiter(state);
 }
 
 /* Launched in TX thread. */
@@ -1016,12 +1025,8 @@ wait_for_lua_shuttle_return(lua_handler_state_t *state)
 	state->waiter = &waiter;
 	fiber_yield();
 	assert(state->waiter == &waiter);
-	state->waiter = waiter.next;
-	if (state->waiter) {
-		struct fiber *fiber = state->waiter->fiber;
-		state->waiter = state->waiter->next;
-		fiber_wakeup(fiber);
-	}
+	if ((state->waiter = waiter.next) != NULL)
+		wakeup_waiter(state);
 }
 
 /* Launched in TX thread. */

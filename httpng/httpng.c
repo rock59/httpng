@@ -1029,8 +1029,7 @@ wait_for_lua_shuttle_return(lua_handler_state_t *state)
 	waiter_t waiter = { .next = state->waiter, .fiber = fiber_self() };
 	state->waiter = &waiter;
 	fiber_yield();
-	assert(state->waiter == &waiter);
-	if ((state->waiter = waiter.next) != NULL)
+	if (state->waiter != NULL)
 		wakeup_waiter(state);
 }
 

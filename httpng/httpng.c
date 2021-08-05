@@ -473,7 +473,12 @@ is_cdata(lua_State *L, int idx)
 static inline bool
 is_box_null(lua_State *L, int idx)
 {
-	return is_cdata(L, idx) && lua_touserdata(L, idx) == NULL;
+	if (!is_cdata(L, idx))
+	       return false;
+	uint32_t cdata_type;
+	void * *const ptr = luaL_checkcdata(L, idx, &cdata_type);
+	/* Alas, CTID_P_VOID is not public so we have to poke blindly. */
+	return *ptr == NULL;
 }
 
 /* Launched in TX thread. */

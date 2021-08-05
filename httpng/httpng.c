@@ -408,6 +408,7 @@ static struct {
 __thread thread_ctx_t *curr_thread_ctx;
 
 static struct sockaddr_un reaper_addr;
+static uint32_t box_null_cdata_type;
 
 static const char shuttle_field_name[] = "_shuttle";
 static const char msg_cant_reap[] =
@@ -477,8 +478,7 @@ is_box_null(lua_State *L, int idx)
 	       return false;
 	uint32_t cdata_type;
 	void * *const ptr = luaL_checkcdata(L, idx, &cdata_type);
-	/* Alas, CTID_P_VOID is not public so we have to poke blindly. */
-	return *ptr == NULL;
+	return box_null_cdata_type == cdata_type && *ptr == NULL;
 }
 
 /* Launched in TX thread. */
@@ -5317,6 +5317,8 @@ luaopen_httpng_c(lua_State *L)
 	reaper_addr.sun_family = AF_UNIX;
 	memcpy(reaper_addr.sun_path, REAPER_SOCKET_NAME,
 		sizeof(REAPER_SOCKET_NAME));
+
+	box_null_cdata_type = luaL_ctypeid(L, "void *");
 
 	luaL_newlib(L, mylib);
 	(void)luaL_dostring(L, "return require 'httpng.router'");

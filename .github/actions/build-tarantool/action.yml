@@ -9,18 +9,20 @@ inputs:
     required: false
   ref:
     required: true
+  build-type:
+    required: true
 runs:
   using: "composite"
   steps:
     - run: |
-        echo "Building Tarantool ${{inputs.ref}}"
+        echo "Building Tarantool ${{inputs.ref}} as ${{inputs.build-type}}"
         mkdir -p ${{github.workspace}}/build
         cd ${{github.workspace}}/build
         git clone -n https://github.com/tarantool/tarantool.git
         cd tarantool
         git checkout ${{inputs.ref}}
         git submodule update --init --recursive
-        CC=${{inputs.cc}} CXX=${{inputs.cxx}} cmake -B ${{github.workspace}}/build/tarantool/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} ${{inputs.cmake_defines}} -DCMAKE_LINKER=/usr/bin/ld
-        cmake --build ${{github.workspace}}/build/tarantool/build --parallel --config ${{env.BUILD_TYPE}} -v
+        CC=${{inputs.cc}} CXX=${{inputs.cxx}} cmake -B ${{github.workspace}}/build/tarantool/build -DCMAKE_BUILD_TYPE=${{inputs.build-type}} ${{inputs.cmake_defines}} -DCMAKE_LINKER=/usr/bin/ld
+        cmake --build ${{github.workspace}}/build/tarantool/build --parallel --config ${{inputs.build-type}} -v
         cd ${{github.workspace}}/build/tarantool/build && sudo make install
       shell: bash

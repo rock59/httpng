@@ -8,11 +8,14 @@ inputs:
     default: g++
   cmake_defines:
     required: false
+  build-type:
+    required: true
 runs:
   using: "composite"
   steps:
     - run: |
-        CC=${{inputs.cc}} CXX=${{inputs.cxx}} cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} ${{inputs.cmake_defines}}
+        echo "Building httpng as ${{inputs.build-type}}"
+        CC=${{inputs.cc}} CXX=${{inputs.cxx}} cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{inputs.build-type}} ${{inputs.cmake_defines}}
         mkdir -p ${{github.workspace}}/build/httpng
-        cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
+        cmake --build ${{github.workspace}}/build --config ${{inputs.build-type}}
       shell: bash

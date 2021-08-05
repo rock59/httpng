@@ -6,10 +6,6 @@ on:
   pull_request:
     branches: [ master ]
 
-env:
-  # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
-  BUILD_TYPE: Release
-
 jobs:
   test:
     strategy:
@@ -17,6 +13,7 @@ jobs:
       matrix:
         os: ['ubuntu-latest', 'macos-latest']
         tarantool-ref: ['1.10', '2.7']
+        build-type: ['Release', 'Debug']
         enable_asan: [true, false]
         exclude:
           - os: 'macos-latest'
@@ -43,6 +40,7 @@ jobs:
       with:
         cc: 'clang'
         cxx: 'clang++'
+        build-type: ${{matrix.build-type}}
         cmake_defines: '-DENABLE_ASAN=ON'
         ref: ${{matrix.tarantool-ref}}
 
@@ -50,6 +48,7 @@ jobs:
       uses: ./.github/actions/build-tarantool
       if: ${{!matrix.enable_asan}}
       with:
+        build-type: ${{matrix.build-type}}
         ref: ${{matrix.tarantool-ref}}
 
     - name: Build httpng (with ASAN)
@@ -59,10 +58,13 @@ jobs:
         cc: 'clang'
         cxx: 'clang++'
         cmake_defines: '-DENABLE_ASAN=ON'
+        build-type: ${{matrix.build-type}}
 
     - name: Build httpng (without ASAN)
       uses: ./.github/actions/build-httpng
       if: ${{!matrix.enable_asan}}
+      with:
+        build-type: ${{matrix.build-type}}
 
     - name: Add entries to /etc/hosts
       run: sudo tests/mangle_etc_hosts.sh

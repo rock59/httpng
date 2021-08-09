@@ -2729,7 +2729,9 @@ on_accept(uv_stream_t *uv_listener, int status)
 		return;
 
 	/* FIXME: Pools instead of malloc? */
-	our_sock_t *const conn = h2o_mem_alloc(sizeof(*conn));
+	our_sock_t *const conn = malloc(sizeof(*conn));
+	if (conn == NULL)
+		return;
 	if (uv_tcp_init(uv_listener->loop, &conn->super)) {
 		free(conn);
 		return;

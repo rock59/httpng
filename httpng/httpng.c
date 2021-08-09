@@ -5051,7 +5051,7 @@ Apply_new_config:
 		conf.num_accepts = 8;
 #endif /* USE_LIBUV */
 	unsigned thread_idx;
-	for (thread_idx = 0; thread_idx < conf.num_threads; ++thread_idx)
+	for (thread_idx = 0; thread_idx < MAX_threads; ++thread_idx)
 		conf.thread_ctxs[thread_idx].globalconf
 			.max_request_entity_size = max_body_len;
 

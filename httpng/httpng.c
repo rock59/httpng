@@ -4411,6 +4411,21 @@ Done:
 }
 
 /* Launched in TX thread. */
+static void
+terminate_tx_fibers(unsigned start_idx, unsigned start_idx_plus_len)
+{
+	unsigned idx;
+	for (idx = start_idx; idx < start_idx_plus_len; ++idx) {
+		conf.thread_ctxs[idx].tx_fiber_should_exit = true;
+		__sync_synchronize();
+		fiber_cancel(conf.tx_fiber_ptrs[idx]);
+	}
+	for (idx = start_idx; idx < start_idx_plus_len; ++idx)
+		while (!conf.thread_ctxs[idx].tx_fiber_finished)
+			fiber_sleep(0.001);
+}
+
+/* Launched in TX thread. */
 static const char *
 hot_reload_add_threads(unsigned threads)
 {
@@ -4471,17 +4486,7 @@ add_thr_threads_init_fail:
 		deinit_worker_thread(idx);
 
 add_thr_fibers_fail:
-	for (idx = conf.num_threads; idx < fiber_idx; ++idx) {
-		conf.thread_ctxs[idx].tx_fiber_should_exit = true;
-		__sync_synchronize();
-		fiber_cancel(conf.tx_fiber_ptrs[idx]);
-	}
-	for (idx = conf.num_threads; idx < fiber_idx; ++idx) {
-		const thread_ctx_t *const thread_ctx = &conf.thread_ctxs[idx];
-		while (!thread_ctx->tx_fiber_finished)
-			fiber_sleep(0.001);
-		assert(thread_ctx->tx_fiber_finished);
-	}
+	terminate_tx_fibers(conf.num_threads, fiber_idx);
 
 add_thr_xtm_to_tx_fail:
 	for (idx = conf.num_threads; idx < xtm_to_tx_idx; ++idx)
@@ -5250,15 +5255,7 @@ userdata_init_fail:
 	terminate_reaper_fiber();
 reaper_fiber_fail:
 fibers_fail:
-	for (idx = 0; idx < fiber_idx; ++idx) {
-		conf.thread_ctxs[idx].tx_fiber_should_exit = true;
-		__sync_synchronize();
-		fiber_cancel(conf.tx_fiber_ptrs[idx]);
-	}
-	for (idx = 0; idx < fiber_idx; ++idx)
-		while (!conf.thread_ctxs[idx].tx_fiber_finished)
-			fiber_sleep(0.001);
-
+	terminate_tx_fibers(0, fiber_idx);
 xtm_to_tx_fail:
 	for (idx = 0; idx < xtm_to_tx_idx; ++idx)
 		xtm_delete(conf.thread_ctxs[idx].queue_to_tx);

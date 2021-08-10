@@ -477,7 +477,7 @@ is_box_null(lua_State *L, int idx)
 	if (!is_cdata(L, idx))
 	       return false;
 	uint32_t cdata_type;
-	void * *const ptr = luaL_checkcdata(L, idx, &cdata_type);
+	void * *const ptr = (void **)luaL_checkcdata(L, idx, &cdata_type);
 	return box_null_cdata_type == cdata_type && *ptr == NULL;
 }
 
@@ -4894,6 +4894,34 @@ configure_handler_security_listen(lua_State *L, int idx, unsigned generation,
 	return NULL;
 }
 
+/* Launched in TX thread. */
+static const char *
+reconfig_handler_security_listen_threads(lua_State *L, int idx,
+	unsigned generation, unsigned threads)
+{
+	const char *lerr;
+	if ((lerr = get_handler_reconfig(L, idx, generation)) != NULL)
+		return lerr;
+
+	if ((lerr = get_min_proto_version(L, idx, true)) != NULL)
+		return lerr;
+
+	if ((lerr = get_openssl_security_level(L, idx, true)) != NULL)
+		return lerr;
+
+	lua_getfield(L, idx, "listen");
+	if (!lua_isnil(L, -1))
+		return "listen can't be changed on reconfiguration";
+
+	if (threads > conf.num_threads) {
+		lerr = hot_reload_add_threads(threads);
+		if (lerr != NULL)
+			return lerr;
+		conf.num_desired_threads = conf.num_threads = threads;
+	}
+	return NULL;
+}
+
 /* N. b.: This macro uses goto. */
 #define PROCESS_OPTIONAL_PARAM(name) \
 	lua_getfield(L, LUA_STACK_IDX_TABLE, #name); \
@@ -4933,7 +4961,7 @@ configure_handler_security_listen(lua_State *L, int idx, unsigned generation,
 static int
 reconfigure(lua_State *L)
 {
-	/* Lua parameters: lua_sites. */
+	/* Lua parameters: cfg table. */
 	enum {
 		LUA_STACK_IDX_TABLE = 1,
 	};
@@ -4982,30 +5010,9 @@ reconfigure(lua_State *L)
 
 	const unsigned generation = (conf.generation += GENERATION_INCREMENT);
 
-	if ((lerr = get_handler_reconfig(L, LUA_STACK_IDX_TABLE, generation))
-	    != NULL)
+	if ((lerr = reconfig_handler_security_listen_threads(L,
+	    LUA_STACK_IDX_TABLE, generation, threads)) != NULL)
 		goto invalid_handler;
-
-	if ((lerr = get_min_proto_version(L, LUA_STACK_IDX_TABLE, true)) !=
-	    NULL)
-		goto min_proto_version_invalid;
-
-	if ((lerr = get_openssl_security_level(L, LUA_STACK_IDX_TABLE, true))
-	    != NULL)
-		goto invalid_openssl_security_level;
-
-	lua_getfield(L, LUA_STACK_IDX_TABLE, "listen");
-	if (!lua_isnil(L, -1)) {
-		lerr = "listen can't be changed on reconfiguration";
-		goto listen_invalid;
-	}
-
-	if (threads > conf.num_threads) {
-		lerr = hot_reload_add_threads(threads);
-		if (lerr != NULL)
-			goto failed_to_add_threads;
-		conf.num_desired_threads = conf.num_threads = threads;
-	}
 
 	apply_new_config(max_body_len, max_conn_per_thread,
 		thread_termination_timeout
@@ -5021,10 +5028,6 @@ reconfigure(lua_State *L)
 	conf.cfg_in_progress = false;
 	return 0;
 
-listen_invalid:
-invalid_openssl_security_level:
-min_proto_version_invalid:
-failed_to_add_threads:
 invalid_handler:
 	;
 	unsigned idx;
@@ -5072,7 +5075,7 @@ save_params_to_conf(unsigned shuttle_size, unsigned threads)
 static int
 cfg(lua_State *L)
 {
-	/* Lua parameters: lua_sites, function_to_call, function_param. */
+	/* Lua parameters: cfg table. */
 	enum {
 		LUA_STACK_IDX_TABLE = 1,
 		LUA_STACK_REQUIRED_PARAMS_COUNT = LUA_STACK_IDX_TABLE,
@@ -5245,12 +5248,9 @@ fibers_fail:
 		__sync_synchronize();
 		fiber_cancel(conf.tx_fiber_ptrs[idx]);
 	}
-	for (idx = 0; idx < fiber_idx; ++idx) {
-		const thread_ctx_t *const thread_ctx = &conf.thread_ctxs[idx];
-		while (!thread_ctx->tx_fiber_finished)
+	for (idx = 0; idx < fiber_idx; ++idx)
+		while (!conf.thread_ctxs[idx].tx_fiber_finished)
 			fiber_sleep(0.001);
-		assert(thread_ctx->tx_fiber_finished);
-	}
 
 xtm_to_tx_fail:
 	for (idx = 0; idx < xtm_to_tx_idx; ++idx)
@@ -5279,8 +5279,8 @@ register_host_failed:
 thread_ctxs_alloc_failed:
 error_parameter_not_a_number:
 error_c_sites:
-error_no_parameters:
 error_something:
+error_no_parameters:
 	conf.cfg_in_progress = false;
 	assert(lerr != NULL);
 	return luaL_error(L, lerr);

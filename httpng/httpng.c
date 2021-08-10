@@ -360,7 +360,7 @@ typedef int lua_handler_func_t(lua_h2o_handler_t *, h2o_req_t *);
 static struct {
 	listener_cfg_t *listener_cfgs;
 	thread_ctx_t *thread_ctxs;
-	struct fiber **tx_fiber_ptrs;
+	struct fiber *(tx_fiber_ptrs[MAX_threads]);
 	struct fiber *reaper_fiber;
 	struct fiber *fiber_to_wake_by_reaper_fiber;
 	struct fiber *fiber_to_wake_on_reaping_done;
@@ -5148,12 +5148,6 @@ cfg(lua_State *L)
 		"/dev/stdout", NULL);
 #endif
 
-	if ((conf.tx_fiber_ptrs = (struct fiber **)
-	    malloc(sizeof(struct fiber *) * MAX_threads)) == NULL) {
-		lerr = "Failed to allocate memory for fiber pointers array";
-		goto fibers_fail_alloc;
-	}
-
 	for (; xtm_to_tx_idx < conf.num_threads; ++xtm_to_tx_idx)
 		if ((conf.thread_ctxs[xtm_to_tx_idx].queue_to_tx =
 		    xtm_create(QUEUE_TO_TX_ITEMS)) == NULL) {
@@ -5261,10 +5255,6 @@ fibers_fail:
 xtm_to_tx_fail:
 	for (idx = 0; idx < xtm_to_tx_idx; ++idx)
 		xtm_delete(conf.thread_ctxs[idx].queue_to_tx);
-
-	free(conf.tx_fiber_ptrs);
-
-fibers_fail_alloc:
 	close_listener_cfgs_sockets();
 	deinit_listener_cfgs();
 	conf_sni_map_cleanup();

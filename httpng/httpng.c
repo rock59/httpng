@@ -4388,6 +4388,30 @@ prepare_thread_ctxs(void)
 
 /* Launched in TX thread. */
 static const char *
+start_worker_threads(unsigned *thr_launch_idx_ptr,
+	unsigned desired_thread_count)
+{
+	const char *lerr;
+	unsigned thr_launch_idx = *thr_launch_idx_ptr;
+	for (; thr_launch_idx < desired_thread_count; ++thr_launch_idx) {
+		thread_ctx_t *const thread_ctx =
+			&conf.thread_ctxs[thr_launch_idx];
+		httpng_sem_init(&thread_ctx->can_be_terminated, 0);
+		if (pthread_create(&thread_ctx->tid,
+		    NULL, worker_func, (void *)(uintptr_t)thr_launch_idx)) {
+			lerr = "Failed to launch worker threads";
+			goto Done;
+		}
+	}
+	lerr = NULL;
+
+Done:
+	*thr_launch_idx_ptr = thr_launch_idx;
+	return lerr;
+}
+
+/* Launched in TX thread. */
+static const char *
 hot_reload_add_threads(unsigned threads)
 {
 	const char *lerr = NULL;
@@ -4425,23 +4449,15 @@ hot_reload_add_threads(unsigned threads)
 
 	__sync_synchronize();
 
-	/* Start processing HTTP requests and requests from TX thread. */
-	unsigned thr_launch_idx;
-	for (thr_launch_idx = conf.num_threads; thr_launch_idx < threads;
-	    ++thr_launch_idx) {
-		thread_ctx_t *const thread_ctx =
-			&conf.thread_ctxs[thr_launch_idx];
-		httpng_sem_init(&thread_ctx->can_be_terminated, 0);
-		if (pthread_create(&thread_ctx->tid,
-		    NULL, worker_func, (void *)(uintptr_t)thr_launch_idx)) {
-			lerr = "Failed to launch worker threads";
-			goto add_thr_threads_launch_fail;
-		}
-	}
+	unsigned thr_launch_idx = conf.num_threads;
+	if ((lerr = start_worker_threads(&thr_launch_idx, threads)) != NULL)
+		goto add_thr_threads_launch_fail;
 
 	return lerr;
 
 add_thr_threads_launch_fail:
+	/* FIXME: We should not ungracefully terminate
+	 * successfully added threads, doing this would fail some requests. */
 	;
 	unsigned idx;
 	for (idx = conf.num_threads; idx < thr_launch_idx; ++idx)
@@ -5205,19 +5221,10 @@ cfg(lua_State *L)
 
 	__sync_synchronize();
 
-	/* Start processing HTTP requests and requests from TX thread. */
-	unsigned thr_launch_idx;
-	for (thr_launch_idx = 0; thr_launch_idx < conf.num_threads;
-	    ++thr_launch_idx) {
-		thread_ctx_t *const thread_ctx =
-			&conf.thread_ctxs[thr_launch_idx];
-		httpng_sem_init(&thread_ctx->can_be_terminated, 0);
-		if (pthread_create(&thread_ctx->tid,
-		    NULL, worker_func, (void *)(uintptr_t)thr_launch_idx)) {
-			lerr = "Failed to launch worker threads";
-			goto threads_launch_fail;
-		}
-	}
+	unsigned thr_launch_idx = 0;
+	if ((lerr = start_worker_threads(&thr_launch_idx, conf.num_threads)) !=
+	    NULL)
+		goto threads_launch_fail;
 
 	conf.lua_sites = lua_sites;
 	conf.lua_site_count = lua_site_count;

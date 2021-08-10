@@ -4427,6 +4427,29 @@ terminate_tx_fibers(unsigned start_idx, unsigned start_idx_plus_len)
 
 /* Launched in TX thread. */
 static const char *
+start_tx_fibers(unsigned *fiber_idx_ptr, unsigned start_idx_plus_len)
+{
+	unsigned fiber_idx = *fiber_idx_ptr;
+	for (; fiber_idx < start_idx_plus_len; ++fiber_idx) {
+		reset_thread_ctx(fiber_idx);
+
+		char name[32];
+		sprintf(name, "tx_h2o_fiber_%u", fiber_idx);
+		struct fiber * *const fiber_ptr =
+			&conf.tx_fiber_ptrs[fiber_idx];
+		if ((*fiber_ptr = fiber_new(name, tx_fiber_func)) == NULL) {
+			*fiber_idx_ptr = fiber_idx;
+			return "Failed to create fiber";
+		}
+		fiber_set_joinable(*fiber_ptr, true);
+		fiber_start(*fiber_ptr, fiber_idx);
+	}
+	*fiber_idx_ptr = fiber_idx;
+	return NULL;
+}
+
+/* Launched in TX thread. */
+static const char *
 hot_reload_add_threads(unsigned threads)
 {
 	const char *lerr = NULL;
@@ -4439,20 +4462,9 @@ hot_reload_add_threads(unsigned threads)
 			goto add_thr_xtm_to_tx_fail;
 		}
 
-	unsigned fiber_idx;
-	for (fiber_idx = conf.num_threads; fiber_idx < threads; ++fiber_idx) {
-		reset_thread_ctx(fiber_idx);
-
-		char name[32];
-		sprintf(name, "tx_h2o_fiber_%u", fiber_idx);
-		if ((conf.tx_fiber_ptrs[fiber_idx] =
-		    fiber_new(name, tx_fiber_func)) == NULL) {
-			lerr = "Failed to create fiber";
-			goto add_thr_fibers_fail;
-		}
-		fiber_set_joinable(conf.tx_fiber_ptrs[fiber_idx], true);
-		fiber_start(conf.tx_fiber_ptrs[fiber_idx], fiber_idx);
-	}
+	unsigned fiber_idx = conf.num_threads;
+	if ((lerr = start_tx_fibers(&fiber_idx, threads)) != NULL)
+		goto add_thr_fibers_fail;
 
 	unsigned thr_init_idx;
 	for (thr_init_idx = conf.num_threads; thr_init_idx < threads;
@@ -5179,18 +5191,8 @@ cfg(lua_State *L)
 			goto xtm_to_tx_fail;
 		}
 
-	for (; fiber_idx < conf.num_threads; ++fiber_idx) {
-		char name[32];
-		sprintf(name, "tx_h2o_fiber_%u", fiber_idx);
-		if ((conf.tx_fiber_ptrs[fiber_idx] =
-		    fiber_new(name, tx_fiber_func)) == NULL) {
-			lerr = "Failed to create fiber";
-			goto fibers_fail;
-		}
-		reset_thread_ctx(fiber_idx);
-		fiber_set_joinable(conf.tx_fiber_ptrs[fiber_idx], true);
-		fiber_start(conf.tx_fiber_ptrs[fiber_idx], fiber_idx);
-	}
+	if ((lerr = start_tx_fibers(&fiber_idx, conf.num_threads)) != NULL)
+		goto fibers_fail;
 
 	if ((conf.reaper_fiber =
 	    fiber_new("reaper fiber", reaper_fiber_func)) == NULL) {

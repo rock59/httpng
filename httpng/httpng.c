@@ -4378,6 +4378,15 @@ prepare_thread_ctx(unsigned thread_idx)
 }
 
 /* Launched in TX thread. */
+static inline void
+prepare_thread_ctxs(void)
+{
+	unsigned idx;
+	for (idx = 0; idx < MAX_threads; ++idx)
+		prepare_thread_ctx(idx);
+}
+
+/* Launched in TX thread. */
 static const char *
 hot_reload_add_threads(unsigned threads)
 {
@@ -4565,8 +4574,8 @@ configure_and_start_reaper_fiber(void)
 
 /* Launched in TX thread. */
 static inline const char *
-get_min_proto_version(const char *min_proto_version_str,
-	size_t min_proto_version_len, bool is_hot_reload)
+parse_min_proto_version(const char *min_proto_version_str,
+	size_t min_proto_version_len, bool is_reconfig)
 {
 
 #define FILL_PROTO_STR(name, value) \
@@ -4593,16 +4602,241 @@ get_min_proto_version(const char *min_proto_version_str,
 		    !memcmp(&protos[idx].str, min_proto_version_str,
 		    min_proto_version_len)) {
 			const long min_tls_proto_version = protos[idx].num;
-			if (is_hot_reload && conf.min_tls_proto_version !=
-			    min_tls_proto_version)
-				return min_proto_version_reconf;
-			conf.min_tls_proto_version = min_tls_proto_version;
+			if (is_reconfig) {
+			       if (conf.min_tls_proto_version !=
+				    min_tls_proto_version)
+					return min_proto_version_reconf;
+			} else
+				conf.min_tls_proto_version =
+					min_tls_proto_version;
 			return NULL;
 		}
 	}
 
 	/* This is security, do not silently fall back to defaults. */
 	return "unknown min_proto_version specified";
+}
+
+/* Launched in TX thread. */
+static const char *
+get_thread_termination_timeout(lua_State *L,
+	int idx, double *thread_termination_timeout)
+{
+	lua_getfield(L, idx, "thread_termination_timeout");
+	if (is_nil_or_null(L, -1)) {
+		*thread_termination_timeout =
+			DEFAULT_thread_termination_timeout;
+		return NULL;
+	}
+	int is_number;
+	*thread_termination_timeout = my_lua_tonumberx(L, -1, &is_number);
+	return is_number ? NULL :
+		"parameter thread_termination_timeout is not a number";
+}
+
+/* Launched in TX thread. */
+static const char *
+get_min_proto_version(lua_State *L, int idx, bool is_reconfig)
+{
+	lua_getfield(L, idx, "min_proto_version");
+	if (is_nil_or_null(L, -1)) {
+		if (is_reconfig) {
+			if (is_box_null(L, -1) && conf.min_tls_proto_version !=
+			    DEFAULT_MIN_TLS_PROTO_VERSION_NUM)
+				return min_proto_version_reconf;
+		} else {
+			conf.min_tls_proto_version =
+				DEFAULT_MIN_TLS_PROTO_VERSION_NUM;
+			fprintf(stderr, "Using default min_proto_version="
+				DEFAULT_MIN_TLS_PROTO_VERSION_STR "\n");
+		}
+		return NULL;
+	}
+
+	static const char err_msg[] = "min_proto_version is not a string";
+	if (!lua_isstring_strict(L, -1))
+		return err_msg;
+	size_t min_proto_version_len;
+	const char *const min_proto_version_str =
+		lua_tolstring(L, -1, &min_proto_version_len);
+	if (min_proto_version_str == NULL)
+		return err_msg;
+
+	return parse_min_proto_version(min_proto_version_str,
+		min_proto_version_len, is_reconfig);
+}
+
+/* Launched in TX thread. */
+static const char *
+get_openssl_security_level(lua_State *L, int idx, bool is_reconfig)
+{
+	lua_getfield(L, idx, "openssl_security_level");
+	if (is_nil_or_null(L, -1)) {
+		if (is_reconfig) {
+			if (is_box_null(L, -1) && conf.openssl_security_level !=
+			    DEFAULT_OPENSSL_SECURITY_LEVEL)
+				return openssl_security_level_reconf;
+		} else {
+			conf.openssl_security_level =
+				DEFAULT_OPENSSL_SECURITY_LEVEL;
+			fprintf(stderr,
+				"Using default openssl_security_level=%d\n",
+				DEFAULT_OPENSSL_SECURITY_LEVEL);
+		}
+		return NULL;
+	}
+
+	int is_integer;
+	const uint64_t openssl_security_level =
+		my_lua_tointegerx(L, -1, &is_integer);
+	if (!is_integer)
+		return "openssl_security_level is not a number";
+	if (openssl_security_level > 5)
+		return "openssl_security_level is invalid";
+	if (is_reconfig) {
+		if (conf.openssl_security_level != openssl_security_level)
+			return openssl_security_level_reconf;
+	} else
+		conf.openssl_security_level = openssl_security_level;
+	return NULL;
+}
+
+/* Launched in TX thread. */
+static const char *
+get_handler_reconfig(lua_State *L, int idx, unsigned generation)
+{
+	lua_getfield(L, idx, "handler");
+	if (lua_isnil(L, -1))
+		return NULL;
+	if (lua_type(L, -1) != LUA_TFUNCTION &&
+	    lua_type(L, -1) != LUA_TTABLE)
+		return "handler is not a function or table (router object)";
+
+	lua_site_t *const lua_site = &conf.lua_sites[0];
+	assert(lua_site->generation != generation);
+
+	if (is_router_used(lua_site))
+		return (lua_type(L, -1) == LUA_TFUNCTION) ?
+			"Replacing router with handler is not supported yet" :
+			"Replacing router is not supported yet";
+	if (lua_type(L, -1) != LUA_TFUNCTION)
+		return "Replacing handler with router is not supported yet";
+	lua_site->new_lua_handler_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+	lua_site->generation = generation;
+	return NULL;
+}
+
+/* Launched in TX thread. */
+static const char *
+get_handler_not_reconfig(lua_State *L, int idx, unsigned generation,
+	lua_site_t **lua_sites_ptr, unsigned *lua_site_count_ptr)
+{
+	lua_getfield(L, idx, "handler");
+	if (lua_isnil(L, -1))
+		return NULL;
+	if (lua_type(L, -1) != LUA_TFUNCTION &&
+	    lua_type(L, -1) != LUA_TTABLE)
+		return "handler is not a function or table (router object)";
+
+	lua_site_t *const new_lua_sites =
+		(lua_site_t *)malloc(sizeof(lua_site_t));
+	if (new_lua_sites == NULL)
+		return "Failed to allocate memory for Lua sites C array";
+	*lua_sites_ptr = new_lua_sites;
+	lua_site_t *const lua_site = &new_lua_sites[0];
+	lua_site->lua_handler_ref = LUA_REFNIL;
+	lua_site->generation = generation;
+	*lua_site_count_ptr = 1;
+	if (lua_type(L, -1) == LUA_TFUNCTION)
+		register_lua_handler(lua_site,
+			luaL_ref(L, LUA_REGISTRYINDEX));
+	else {
+		const char *lerr;
+		if (register_router(L, lua_site,
+		    luaL_ref(L, LUA_REGISTRYINDEX), &lerr) != 0)
+			return lerr;
+	}
+	return NULL;
+}
+
+/* Launched in TX thread. */
+static inline void
+apply_max_body_len(uint64_t max_body_len)
+{
+	unsigned thread_idx;
+	for (thread_idx = 0; thread_idx < MAX_threads; ++thread_idx)
+		conf.thread_ctxs[thread_idx].globalconf
+			.max_request_entity_size = max_body_len;
+}
+
+/* Launched in TX thread. */
+static inline void
+apply_new_config(uint64_t max_body_len, uint64_t max_conn_per_thread,
+	double thread_termination_timeout
+#ifdef SUPPORT_SPLITTING_LARGE_BODY
+	, bool use_body_split
+#endif /* SUPPORT_SPLITTING_LARGE_BODY */
+	)
+{
+#ifdef SUPPORT_SPLITTING_LARGE_BODY
+	conf.use_body_split = use_body_split;
+#endif /* SUPPORT_SPLITTING_LARGE_BODY */
+	conf.max_conn_per_thread = max_conn_per_thread;
+#ifndef USE_LIBUV
+	conf.num_accepts = max_conn_per_thread / 16;
+	if (conf.num_accepts < 8)
+		conf.num_accepts = 8;
+#endif /* USE_LIBUV */
+	apply_max_body_len(max_body_len);
+	conf.thread_termination_timeout = thread_termination_timeout;
+}
+
+/* Launched in TX thread. */
+static const char *
+get_c_handlers(lua_State *L, int idx, const path_desc_t **path_descs_ptr)
+{
+	lua_getfield(L, idx, "c_sites_func");
+	if (lua_isnil(L, -1))
+		return NULL;
+
+	if (lua_type(L, -1) != LUA_TFUNCTION)
+		return "c_sites_func must be a function";
+
+	lua_getfield(L, idx, "c_sites_func_param");
+	if (lua_pcall(L, 1, 1, 0) != LUA_OK)
+		return "c_sites_func() failed";
+
+	if (!lua_islightuserdata(L, -1))
+		return "c_sites_func() returned wrong data type";
+	*path_descs_ptr = (path_desc_t *)lua_touserdata(L, -1);
+	return NULL;
+}
+
+/* Launched in TX thread. */
+static const char *
+register_c_handlers(const path_desc_t *path_descs,
+	unsigned *count_ptr)
+{
+	if (path_descs == NULL) {
+		*count_ptr = 0;
+		return NULL;
+	}
+
+	const path_desc_t *path_desc = path_descs;
+	if (path_desc->path == NULL)
+		/* Need at least one. */
+		return "Empty C sites list";
+
+	do {
+		unsigned thread_idx;
+		for (thread_idx = 0; thread_idx < MAX_threads;
+		    ++thread_idx)
+			register_handler(conf.thread_ctxs[thread_idx]
+				.hostconf, path_desc->path,
+				path_desc->handler);
+	} while ((++path_desc)->path != NULL);
+	*count_ptr = path_desc - path_descs;
+	return NULL;
 }
 
 /* N. b.: This macro uses goto. */
@@ -4661,7 +4895,7 @@ reconfigure(lua_State *L)
 	if ((lerr = reap_gracefully_terminating_threads()) != NULL)
 		goto error_something;
 	if (conf.lua_site_count < 1) {
-		lerr = "Reconfigure w/o at least one lua site is not supported";
+		lerr = "Reconfigure w/o router or Lua handler is not supported";
 		goto error_something;
 	}
 	conf.hot_reload_in_progress = true;
@@ -4680,19 +4914,10 @@ reconfigure(lua_State *L)
 		goto error_hot_reload_shuttle_size;
 	}
 
-	lua_getfield(L, LUA_STACK_IDX_TABLE, "thread_termination_timeout");
 	double thread_termination_timeout;
-	if (is_nil_or_null(L, -1))
-		thread_termination_timeout = DEFAULT_thread_termination_timeout;
-	else {
-		int is_number;
-		thread_termination_timeout =
-			my_lua_tonumberx(L, -1, &is_number);
-		if (!is_number) {
-		lerr = "parameter thread_termination_timeout is not a number";
-			goto error_parameter_not_a_number;
-		}
-	}
+	if ((lerr = get_thread_termination_timeout(L, LUA_STACK_IDX_TABLE,
+	    &thread_termination_timeout)) != NULL)
+		goto error_parameter_not_a_number;
 
 #ifdef SUPPORT_SPLITTING_LARGE_BODY
 	lua_getfield(L, LUA_STACK_IDX_TABLE, "use_body_split");
@@ -4702,92 +4927,18 @@ reconfigure(lua_State *L)
 
 	const unsigned generation = (conf.generation += GENERATION_INCREMENT);
 
-	lua_getfield(L, LUA_STACK_IDX_TABLE, "handler");
-	if (lua_isnil(L, -1))
-		goto Skip_main_lua_handler;
-	if (lua_type(L, -1) != LUA_TFUNCTION &&
-	    lua_type(L, -1) != LUA_TTABLE) {
-		lerr = "handler is not a function or table (router object)";
+	if ((lerr = get_handler_reconfig(L, LUA_STACK_IDX_TABLE, generation))
+	    != NULL)
 		goto invalid_handler;
-	}
 
-	lua_site_t *const lua_site = &conf.lua_sites[0];
-	if (lua_site->generation == generation) {
-		lerr = "duplicated site description for /";
-		goto invalid_sites;
-	}
-
-	if (is_router_used(lua_site)) {
-		if (lua_type(L, -1) == LUA_TFUNCTION) {
-				lerr =
-		"Replacing router with handler is not supported yet";
-				goto invalid_sites;
-			}
-		lerr = "Replacing router is not supported yet";
-		goto invalid_sites;
-	}
-	if (lua_type(L, -1) != LUA_TFUNCTION) {
-		lerr =
-		"Replacing handler with router is not supported yet";
-		goto invalid_sites;
-	}
-	lua_site->new_lua_handler_ref = luaL_ref(L, LUA_REGISTRYINDEX);
-	lua_site->generation = generation;
-
-Skip_main_lua_handler:
-	lua_getfield(L, LUA_STACK_IDX_TABLE, "min_proto_version");
-	if (is_nil_or_null(L, -1)) {
-		if (is_box_null(L, -1) && conf.min_tls_proto_version !=
-		    DEFAULT_MIN_TLS_PROTO_VERSION_NUM) {
-			lerr = min_proto_version_reconf;
-			goto min_proto_version_invalid;
-		}
-		goto Skip_min_proto_version;
-	}
-
-	if (!lua_isstring_strict(L, -1)) {
-		lerr = "min_proto_version is not a string";
-		goto min_proto_version_invalid;
-	}
-	size_t min_proto_version_len;
-	const char *const min_proto_version_str =
-		lua_tolstring(L, -1, &min_proto_version_len);
-	if (min_proto_version_str == NULL) {
-		lerr = "min_proto_version is not a string";
-		goto min_proto_version_invalid;
-	}
-
-	if ((lerr = get_min_proto_version(min_proto_version_str,
-	    min_proto_version_len, true)) != NULL)
+	if ((lerr = get_min_proto_version(L, LUA_STACK_IDX_TABLE, true)) !=
+	    NULL)
 		goto min_proto_version_invalid;
 
-Skip_min_proto_version:
-	lua_getfield(L, LUA_STACK_IDX_TABLE, "openssl_security_level");
-	if (is_nil_or_null(L, -1)) {
-		if (is_box_null(L, -1) && conf.openssl_security_level !=
-		    DEFAULT_OPENSSL_SECURITY_LEVEL) {
-			lerr = openssl_security_level_reconf;
-			goto invalid_openssl_security_level;
-		}
-		goto Skip_openssl_security_level;
-	}
+	if ((lerr = get_openssl_security_level(L, LUA_STACK_IDX_TABLE, true))
+	    != NULL)
+		goto invalid_openssl_security_level;
 
-	const uint64_t openssl_security_level =
-		my_lua_tointegerx(L, -1, &is_integer);
-	if (!is_integer) {
-		lerr = "openssl_security_level is not a number";
-		goto invalid_openssl_security_level;
-	}
-	if (openssl_security_level > 5) {
-		lerr = "openssl_security_level is invalid";
-		goto invalid_openssl_security_level;
-	}
-	if (conf.openssl_security_level != openssl_security_level) {
-		lerr = openssl_security_level_reconf;
-		goto invalid_openssl_security_level;
-	}
-
-Skip_openssl_security_level:
 	lua_getfield(L, LUA_STACK_IDX_TABLE, "listen");
 	if (!lua_isnil(L, -1)) {
 		lerr = "listen can't be changed on reconfiguration";
@@ -4801,19 +4952,12 @@ Skip_openssl_security_level:
 		conf.num_desired_threads = conf.num_threads = threads;
 	}
 
-	conf.use_body_split = use_body_split;
-	conf.max_conn_per_thread = max_conn_per_thread;
-#ifndef USE_LIBUV
-	conf.num_accepts = max_conn_per_thread / 16;
-	if (conf.num_accepts < 8)
-		conf.num_accepts = 8;
-#endif /* USE_LIBUV */
-	unsigned thread_idx;
-	for (thread_idx = 0; thread_idx < MAX_threads; ++thread_idx)
-		conf.thread_ctxs[thread_idx].globalconf
-			.max_request_entity_size = max_body_len;
-
-	conf.thread_termination_timeout = thread_termination_timeout;
+	apply_new_config(max_body_len, max_conn_per_thread,
+		thread_termination_timeout
+#ifdef SUPPORT_SPLITTING_LARGE_BODY
+		, use_body_split
+#endif /* SUPPORT_SPLITTING_LARGE_BODY */
+		);
 
 	replace_lua_handlers(L);
 	hot_reload_remove_threads(threads);
@@ -4827,7 +4971,6 @@ invalid_openssl_security_level:
 min_proto_version_invalid:
 failed_to_add_threads:
 invalid_handler:
-invalid_sites:
 	;
 	unsigned idx;
 	for (idx = 0; idx < conf.lua_site_count; ++idx) {
@@ -4846,6 +4989,28 @@ error_something:
 	conf.cfg_in_progress = false;
 	assert(lerr != NULL);
 	return luaL_error(L, lerr);
+}
+
+/* Launched in TX thread. */
+static inline void
+save_params_to_conf(unsigned shuttle_size, unsigned threads)
+{
+	/* FIXME: Add sanity checks, especially shuttle_size -
+	 * it must >sizeof(shuttle_t) (accounting for Lua payload)
+	 * and aligned. */
+	conf.num_desired_threads = conf.num_threads = threads;
+	conf.shuttle_size = shuttle_size;
+
+	/* FIXME: Can differ from shuttle_size. */
+	conf.recv_data_size = shuttle_size;
+
+	conf.max_headers_lua = (conf.shuttle_size - sizeof(shuttle_t) -
+		offsetof(lua_handler_state_t, un.resp.first.headers)) /
+		sizeof(http_header_entry_t);
+	conf.max_path_len_lua = conf.shuttle_size - sizeof(shuttle_t) -
+		offsetof(lua_handler_state_t, un.req.buffer);
+	conf.max_recv_bytes_lua_websocket = conf.recv_data_size -
+		(uintptr_t)get_websocket_recv_location(NULL);
 }
 
 /* Launched in TX thread. */
@@ -4876,51 +5041,20 @@ cfg(lua_State *L)
 	if (conf.configured)
 		return reconfigure(L);
 
-	unsigned c_handlers = 0;
-
-	lua_getfield(L, LUA_STACK_IDX_TABLE, "c_sites_func");
-	const path_desc_t *path_descs;
-	if (lua_isnil(L, -1)) {
-		path_descs = NULL;
-		goto Skip_c_sites;
-	}
-
-	if (lua_type(L, -1) != LUA_TFUNCTION) {
-		lerr = "c_sites_func must be a function";
-		goto error_c_sites_func_not_a_function;
-	}
-
-	lua_getfield(L, LUA_STACK_IDX_TABLE, "c_sites_func_param");
-	if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
-		lerr = "c_sites_func() failed";
-		goto error_c_sites_func_failed;
-	}
-
-	if (!lua_islightuserdata(L, -1)) {
-		lerr = "c_sites_func() returned wrong data type";
-		goto error_c_sites_func_wrong_return;
-	}
-	path_descs = (path_desc_t *)lua_touserdata(L, -1);
-Skip_c_sites:
+	const path_desc_t *path_descs = NULL;
+	if ((lerr = get_c_handlers(L, LUA_STACK_IDX_TABLE, &path_descs)) !=
+	    NULL)
+		goto error_c_sites;
 
 	/* N. b.: This macro uses goto. */
 	PROCESS_OPTIONAL_PARAMS();
 
 #undef PROCESS_OPTIONAL_PARAM
 
-	lua_getfield(L, LUA_STACK_IDX_TABLE, "thread_termination_timeout");
 	double thread_termination_timeout;
-	if (is_nil_or_null(L, -1))
-		thread_termination_timeout = DEFAULT_thread_termination_timeout;
-	else {
-		int is_number;
-		thread_termination_timeout =
-			my_lua_tonumberx(L, -1, &is_number);
-		if (!is_number) {
-		lerr = "parameter thread_termination_timeout is not a number";
-			goto error_parameter_not_a_number;
-		}
-	}
+	if ((lerr = get_thread_termination_timeout(L, LUA_STACK_IDX_TABLE,
+	    &thread_termination_timeout)) != NULL)
+		goto error_parameter_not_a_number;
 
 #ifdef SUPPORT_SPLITTING_LARGE_BODY
 	lua_getfield(L, LUA_STACK_IDX_TABLE, "use_body_split");
@@ -4928,22 +5062,7 @@ Skip_c_sites:
 		is_nil_or_null(L, -1) ? false : lua_toboolean(L, -1);
 #endif /* SUPPORT_SPLITTING_LARGE_BODY */
 
-	/* FIXME: Add sanity checks, especially shuttle_size -
-	 * it must >sizeof(shuttle_t) (accounting for Lua payload)
-	 * and aligned. */
-	conf.num_desired_threads = conf.num_threads = threads;
-	conf.shuttle_size = shuttle_size;
-
-	/* FIXME: Can differ from shuttle_size. */
-	conf.recv_data_size = shuttle_size;
-
-	conf.max_headers_lua = (conf.shuttle_size - sizeof(shuttle_t) -
-		offsetof(lua_handler_state_t, un.resp.first.headers)) /
-		sizeof(http_header_entry_t);
-	conf.max_path_len_lua = conf.shuttle_size - sizeof(shuttle_t) -
-		offsetof(lua_handler_state_t, un.req.buffer);
-	conf.max_recv_bytes_lua_websocket = conf.recv_data_size -
-		(uintptr_t)get_websocket_recv_location(NULL);
+	save_params_to_conf(shuttle_size, threads);
 
 	if ((conf.thread_ctxs = (thread_ctx_t *)malloc(MAX_threads *
 	    sizeof(thread_ctx_t))) == NULL) {
@@ -4951,10 +5070,7 @@ Skip_c_sites:
 		goto thread_ctxs_alloc_failed;
 	}
 
-	unsigned idx;
-	for (idx = 0; idx < MAX_threads; ++idx) {
-		prepare_thread_ctx(idx);
-	}
+	prepare_thread_ctxs();
 
 	unsigned config_init_idx;
 	for (config_init_idx = 0; config_init_idx < MAX_threads;
@@ -4972,57 +5088,20 @@ Skip_c_sites:
 		}
 	}
 
-	if (path_descs != NULL) {
-		const path_desc_t *path_desc = path_descs;
-		if (path_desc->path == NULL) {
-			/* Need at least one. */
-			lerr = "Empty C sites list";
-			goto c_desc_empty;
-		}
-
-		do {
-			unsigned thread_idx;
-			for (thread_idx = 0; thread_idx < MAX_threads;
-			    ++thread_idx)
-				register_handler(conf.thread_ctxs[thread_idx]
-					.hostconf, path_desc->path,
-					path_desc->handler);
-			++c_handlers;
-		} while ((++path_desc)->path != NULL);
-	}
+	unsigned c_handlers_count = 0;
+	if ((lerr = register_c_handlers(path_descs, &c_handlers_count)) !=
+	    NULL)
+		goto c_desc_empty;
 
 	lua_site_t *lua_sites = NULL;
 	unsigned lua_site_count = 0;
 	const unsigned generation = (conf.generation += GENERATION_INCREMENT);
 
-	lua_getfield(L, LUA_STACK_IDX_TABLE, "handler");
-	if (lua_isnil(L, -1))
-		goto Skip_main_lua_handler;
-	if (lua_type(L, -1) != LUA_TFUNCTION &&
-	    lua_type(L, -1) != LUA_TTABLE) {
-		lerr = "handler is not a function or table (router object)";
+	if ((lerr = get_handler_not_reconfig(L, LUA_STACK_IDX_TABLE,
+	    generation, &lua_sites, &lua_site_count)) != NULL)
 		goto invalid_handler;
-	}
 
-	lua_site_t *const new_lua_sites = (lua_site_t *)realloc(lua_sites,
-		sizeof(lua_site_t) * (lua_site_count + 1));
-	if (new_lua_sites == NULL) {
-		lerr = "Failed to allocate memory for Lua sites C array";
-		goto invalid_handler;
-	}
-	lua_sites = new_lua_sites;
-	lua_site_t *const lua_site = &lua_sites[lua_site_count++];
-	lua_site->lua_handler_ref = LUA_REFNIL;
-	if (lua_type(L, -1) == LUA_TFUNCTION)
-		register_lua_handler(lua_site,
-			luaL_ref(L, LUA_REGISTRYINDEX));
-	else if (register_router(L, lua_site,
-	    luaL_ref(L, LUA_REGISTRYINDEX), &lerr) != 0)
-		goto invalid_handler;
-	lua_site->generation = generation;
-
-Skip_main_lua_handler:
-	if (c_handlers + lua_site_count == 0) {
+	if (c_handlers_count + lua_site_count == 0) {
 		lerr = "No handlers specified";
 		goto no_handlers;
 	}
@@ -5032,51 +5111,14 @@ Skip_main_lua_handler:
 		goto no_handlers;
 	}
 
-	lua_getfield(L, LUA_STACK_IDX_TABLE, "min_proto_version");
-	if (is_nil_or_null(L, -1)) {
-		conf.min_tls_proto_version = DEFAULT_MIN_TLS_PROTO_VERSION_NUM;
-		fprintf(stderr, "Using default min_proto_version="
-			DEFAULT_MIN_TLS_PROTO_VERSION_STR "\n");
-		goto Skip_min_proto_version;
-	}
-
-	if (!lua_isstring_strict(L, -1)) {
-		lerr = "min_proto_version is not a string";
-		goto min_proto_version_invalid;
-	}
-	size_t min_proto_version_len;
-	const char *const min_proto_version_str =
-		lua_tolstring(L, -1, &min_proto_version_len);
-	if (min_proto_version_str == NULL) {
-		lerr = "min_proto_version is not a string";
-		goto min_proto_version_invalid;
-	}
-
-	if ((lerr = get_min_proto_version(min_proto_version_str,
-	    min_proto_version_len, false)) != NULL)
+	if ((lerr = get_min_proto_version(L, LUA_STACK_IDX_TABLE, false)) !=
+	    NULL)
 		goto min_proto_version_invalid;
 
-Skip_min_proto_version:
-	lua_getfield(L, LUA_STACK_IDX_TABLE, "openssl_security_level");
-	if (is_nil_or_null(L, -1)) {
-		conf.openssl_security_level = DEFAULT_OPENSSL_SECURITY_LEVEL;
-		fprintf(stderr, "Using default openssl_security_level=%d\n",
-			DEFAULT_OPENSSL_SECURITY_LEVEL);
-		goto Skip_openssl_security_level;
-	}
-	const uint64_t openssl_security_level =
-		my_lua_tointegerx(L, -1, &is_integer);
-	if (!is_integer) {
-		lerr = "openssl_security_level is not a number";
+	if ((lerr = get_openssl_security_level(L, LUA_STACK_IDX_TABLE, false))
+	    != NULL)
 		goto invalid_openssl_security_level;
-	}
-	if (openssl_security_level > 5) {
-		lerr = "openssl_security_level is invalid";
-		goto invalid_openssl_security_level;
-	}
-	conf.openssl_security_level = openssl_security_level;
 
-Skip_openssl_security_level:
 	if (load_and_handle_listen_from_lua(L, LUA_STACK_IDX_TABLE, &lerr) != 0)
 		goto listen_invalid;
 
@@ -5086,7 +5128,6 @@ Skip_openssl_security_level:
 	h2o_logger_t *logger = h2o_access_log_register(&config.default_host,
 		"/dev/stdout", NULL);
 #endif
-
 
 	if ((conf.tx_fiber_ptrs = (struct fiber **)
 	    malloc(sizeof(struct fiber *) * MAX_threads)) == NULL) {
@@ -5139,9 +5180,13 @@ Skip_openssl_security_level:
 			goto threads_init_fail;
 		}
 
-	goto Apply_new_config;
+	apply_new_config(max_body_len, max_conn_per_thread,
+		thread_termination_timeout
+#ifdef SUPPORT_SPLITTING_LARGE_BODY
+		, use_body_split
+#endif /* SUPPORT_SPLITTING_LARGE_BODY */
+		);
 
-After_applying_new_config:
 	__sync_synchronize();
 
 	/* Start processing HTTP requests and requests from TX thread. */
@@ -5166,24 +5211,9 @@ After_applying_new_config:
 	conf.cfg_in_progress = false;
 	return 0;
 
-Apply_new_config:
-	conf.use_body_split = use_body_split;
-	conf.max_conn_per_thread = max_conn_per_thread;
-#ifndef USE_LIBUV
-	conf.num_accepts = max_conn_per_thread / 16;
-	if (conf.num_accepts < 8)
-		conf.num_accepts = 8;
-#endif /* USE_LIBUV */
-	unsigned thread_idx;
-	for (thread_idx = 0; thread_idx < MAX_threads; ++thread_idx)
-		conf.thread_ctxs[thread_idx].globalconf
-			.max_request_entity_size = max_body_len;
-
-	conf.thread_termination_timeout = thread_termination_timeout;
-
-	goto After_applying_new_config;
-
 threads_launch_fail:
+	;
+	unsigned idx;
 	for (idx = 0; idx < thr_launch_idx; ++idx)
 		tell_thread_to_terminate_immediately(&conf.thread_ctxs[idx]);
 
@@ -5234,6 +5264,8 @@ invalid_handler:
 c_desc_empty:
 register_host_failed:
 	/* N.b.: h2o currently can't "unregister" host(s). */
+	;
+	unsigned thread_idx;
 	for (thread_idx = 0; thread_idx < config_init_idx;
 	    ++thread_idx)
 		h2o_config_dispose(&conf.thread_ctxs[thread_idx]
@@ -5241,9 +5273,7 @@ register_host_failed:
 	free(conf.thread_ctxs);
 thread_ctxs_alloc_failed:
 error_parameter_not_a_number:
-error_c_sites_func_wrong_return:
-error_c_sites_func_failed:
-error_c_sites_func_not_a_function:
+error_c_sites:
 error_no_parameters:
 error_something:
 	conf.cfg_in_progress = false;

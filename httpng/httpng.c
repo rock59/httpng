@@ -4839,6 +4839,61 @@ register_c_handlers(const path_desc_t *path_descs,
 	return NULL;
 }
 
+/* Launched in TX thread. */
+static const char *
+register_hosts(void)
+{
+	unsigned idx;
+	for (idx = 0; idx < MAX_threads; ++idx)
+		h2o_config_init(&conf.thread_ctxs[idx].globalconf);
+
+	for (idx = 0; idx < MAX_threads; ++idx) {
+		thread_ctx_t *const thread_ctx =
+			&conf.thread_ctxs[idx];
+		/* FIXME: Should make customizable. */
+		if ((thread_ctx->hostconf =
+		    h2o_config_register_host(&thread_ctx->globalconf,
+			    h2o_iovec_init(H2O_STRLIT("default")),
+			    H2O_DEFAULT_PORT_FOR_PROTOCOL_USED)) == NULL)
+			return "libh2o host registration failed";
+	}
+	return NULL;
+}
+
+/* Launched in TX thread. */
+static const char *
+configure_handler_security_listen(lua_State *L, int idx, unsigned generation,
+	lua_site_t **lua_sites, unsigned *lua_site_count_ptr,
+	unsigned c_handlers_count)
+{
+	const char *lerr;
+	unsigned lua_site_count = 0;
+
+	assert(*lua_site_count_ptr == 0);
+	if ((lerr = get_handler_not_reconfig(L, idx,
+	    generation, lua_sites, &lua_site_count)) != NULL)
+		return lerr;
+
+	*lua_site_count_ptr = lua_site_count;
+	if (c_handlers_count + lua_site_count == 0)
+		return "No handlers specified";
+
+	if (lua_site_count != 0 && conf.shuttle_size < sizeof(shuttle_t) +
+	    sizeof(lua_handler_state_t))
+		return "shuttle_size is too small for Lua handlers";
+
+	if ((lerr = get_min_proto_version(L, idx, false)) != NULL)
+		return lerr;
+
+	if ((lerr = get_openssl_security_level(L, idx, false)) != NULL)
+		return lerr;
+
+	if (load_and_handle_listen_from_lua(L, idx, &lerr) != 0)
+		return lerr;
+
+	return NULL;
+}
+
 /* N. b.: This macro uses goto. */
 #define PROCESS_OPTIONAL_PARAM(name) \
 	lua_getfield(L, LUA_STACK_IDX_TABLE, #name); \
@@ -5049,8 +5104,6 @@ cfg(lua_State *L)
 	/* N. b.: This macro uses goto. */
 	PROCESS_OPTIONAL_PARAMS();
 
-#undef PROCESS_OPTIONAL_PARAM
-
 	double thread_termination_timeout;
 	if ((lerr = get_thread_termination_timeout(L, LUA_STACK_IDX_TABLE,
 	    &thread_termination_timeout)) != NULL)
@@ -5072,21 +5125,8 @@ cfg(lua_State *L)
 
 	prepare_thread_ctxs();
 
-	unsigned config_init_idx;
-	for (config_init_idx = 0; config_init_idx < MAX_threads;
-	    ++config_init_idx) {
-		thread_ctx_t *const thread_ctx =
-			&conf.thread_ctxs[config_init_idx];
-		h2o_config_init(&thread_ctx->globalconf);
-		/* FIXME: Should make customizable. */
-		if ((thread_ctx->hostconf =
-		    h2o_config_register_host(&thread_ctx->globalconf,
-			    h2o_iovec_init(H2O_STRLIT("default")),
-			    H2O_DEFAULT_PORT_FOR_PROTOCOL_USED)) == NULL) {
-			lerr = "libh2o host registration failed";
-			goto register_host_failed;
-		}
-	}
+	if ((lerr = register_hosts()) != NULL)
+		goto register_host_failed;
 
 	unsigned c_handlers_count = 0;
 	if ((lerr = register_c_handlers(path_descs, &c_handlers_count)) !=
@@ -5097,30 +5137,9 @@ cfg(lua_State *L)
 	unsigned lua_site_count = 0;
 	const unsigned generation = (conf.generation += GENERATION_INCREMENT);
 
-	if ((lerr = get_handler_not_reconfig(L, LUA_STACK_IDX_TABLE,
-	    generation, &lua_sites, &lua_site_count)) != NULL)
+	if ((lerr = configure_handler_security_listen(L, LUA_STACK_IDX_TABLE,
+	    generation, &lua_sites, &lua_site_count, c_handlers_count)) != NULL)
 		goto invalid_handler;
-
-	if (c_handlers_count + lua_site_count == 0) {
-		lerr = "No handlers specified";
-		goto no_handlers;
-	}
-	if (lua_site_count != 0 &&
-	    shuttle_size < sizeof(shuttle_t) + sizeof(lua_handler_state_t)) {
-		lerr = "shuttle_size is too small for Lua handlers";
-		goto no_handlers;
-	}
-
-	if ((lerr = get_min_proto_version(L, LUA_STACK_IDX_TABLE, false)) !=
-	    NULL)
-		goto min_proto_version_invalid;
-
-	if ((lerr = get_openssl_security_level(L, LUA_STACK_IDX_TABLE, false))
-	    != NULL)
-		goto invalid_openssl_security_level;
-
-	if (load_and_handle_listen_from_lua(L, LUA_STACK_IDX_TABLE, &lerr) != 0)
-		goto listen_invalid;
 
 #if 0
 	/* FIXME: Should make customizable. */
@@ -5249,10 +5268,6 @@ fibers_fail_alloc:
 	close_listener_cfgs_sockets();
 	deinit_listener_cfgs();
 	conf_sni_map_cleanup();
-listen_invalid:
-invalid_openssl_security_level:
-min_proto_version_invalid:
-no_handlers:
 invalid_handler:
 	for (idx = 0; idx < lua_site_count; ++idx) {
 		lua_site_t *const lua_site = &lua_sites[idx];
@@ -5266,7 +5281,7 @@ register_host_failed:
 	/* N.b.: h2o currently can't "unregister" host(s). */
 	;
 	unsigned thread_idx;
-	for (thread_idx = 0; thread_idx < config_init_idx;
+	for (thread_idx = 0; thread_idx < MAX_threads;
 	    ++thread_idx)
 		h2o_config_dispose(&conf.thread_ctxs[thread_idx]
 			.globalconf);

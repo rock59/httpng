@@ -4213,6 +4213,15 @@ terminate_reaper_fiber(void)
 }
 
 /* Launched in TX thread. */
+static void
+dispose_h2o_configs(void)
+{
+	unsigned thr_idx;
+	for (thr_idx = 0; thr_idx < MAX_threads; ++thr_idx)
+		h2o_config_dispose(&conf.thread_ctxs[thr_idx].globalconf);
+}
+
+/* Launched in TX thread. */
 static int
 on_shutdown_internal(lua_State *L, bool called_from_callback)
 {
@@ -4263,8 +4272,7 @@ on_shutdown_internal(lua_State *L, bool called_from_callback)
 #endif /* USE_LIBUV */
 	free(conf.listener_cfgs);
 	conf_sni_map_cleanup();
-	for (thr_idx = 0; thr_idx < MAX_threads; ++thr_idx)
-		h2o_config_dispose(&conf.thread_ctxs[thr_idx].globalconf);
+	dispose_h2o_configs();
 	free(conf.thread_ctxs);
 	for (idx = 0; idx < conf.lua_site_count; ++idx) {
 		const lua_site_t *const site = &conf.lua_sites[idx];
@@ -4449,18 +4457,62 @@ start_tx_fibers(unsigned *fiber_idx_ptr, unsigned start_idx_plus_len)
 }
 
 /* Launched in TX thread. */
+static void
+terminate_and_join_threads(unsigned start_idx, unsigned start_idx_plus_len)
+{
+	unsigned idx;
+	for (idx = start_idx; idx < start_idx_plus_len; ++idx)
+		tell_thread_to_terminate_immediately(&conf.thread_ctxs[idx]);
+
+	for (idx = start_idx; idx < start_idx_plus_len; ++idx)
+		pthread_join(conf.thread_ctxs[idx].tid, NULL);
+}
+
+/* Launched in TX thread. */
+static void
+deinit_worker_threads(unsigned start_idx, unsigned start_idx_plus_len)
+{
+	unsigned idx;
+	for (idx = start_idx; idx < start_idx_plus_len; ++idx)
+		deinit_worker_thread(idx);
+}
+
+/* Launched in TX thread. */
+static void
+xtm_delete_queues_to_tx(unsigned start_idx, unsigned start_idx_plus_len)
+{
+	unsigned idx;
+	for (idx = start_idx; idx < start_idx_plus_len; ++idx)
+		xtm_delete(conf.thread_ctxs[idx].queue_to_tx);
+}
+
+/* Launched in TX thread. */
+static const char *
+create_xtm_queues_to_tx(unsigned *xtm_to_tx_idx_ptr,
+	unsigned start_idx_plus_len)
+{
+	const char *lerr;
+	unsigned xtm_to_tx_idx = *xtm_to_tx_idx_ptr;
+	for (; xtm_to_tx_idx < start_idx_plus_len; ++xtm_to_tx_idx)
+		if ((conf.thread_ctxs[xtm_to_tx_idx].queue_to_tx =
+		    xtm_create(QUEUE_TO_TX_ITEMS)) == NULL) {
+			lerr = "Failed to create xtm queue";
+			goto Done;
+		}
+	lerr = NULL;
+Done:
+	*xtm_to_tx_idx_ptr = xtm_to_tx_idx;
+	return lerr;
+}
+
+/* Launched in TX thread. */
 static const char *
 hot_reload_add_threads(unsigned threads)
 {
 	const char *lerr = NULL;
-	unsigned xtm_to_tx_idx;
-	for (xtm_to_tx_idx = conf.num_threads; xtm_to_tx_idx < threads;
-	    ++xtm_to_tx_idx)
-		if ((conf.thread_ctxs[xtm_to_tx_idx].queue_to_tx =
-		    xtm_create(QUEUE_TO_TX_ITEMS)) == NULL) {
-			lerr = "Failed to create xtm queue";
-			goto add_thr_xtm_to_tx_fail;
-		}
+	unsigned xtm_to_tx_idx = conf.num_threads;
+	if ((lerr = create_xtm_queues_to_tx(&xtm_to_tx_idx, threads)) != NULL)
+		goto add_thr_xtm_to_tx_fail;
 
 	unsigned fiber_idx = conf.num_threads;
 	if ((lerr = start_tx_fibers(&fiber_idx, threads)) != NULL)
@@ -4485,24 +4537,14 @@ hot_reload_add_threads(unsigned threads)
 add_thr_threads_launch_fail:
 	/* FIXME: We should not ungracefully terminate
 	 * successfully added threads, doing this would fail some requests. */
-	;
-	unsigned idx;
-	for (idx = conf.num_threads; idx < thr_launch_idx; ++idx)
-		tell_thread_to_terminate_immediately(&conf.thread_ctxs[idx]);
-
-	for (idx = conf.num_threads; idx < thr_launch_idx; ++idx)
-		pthread_join(conf.thread_ctxs[idx].tid, NULL);
+	terminate_and_join_threads(conf.num_threads, thr_launch_idx);
 
 add_thr_threads_init_fail:
-	for (idx = conf.num_threads; idx < thr_init_idx; ++idx)
-		deinit_worker_thread(idx);
-
+	deinit_worker_threads(conf.num_threads, thr_init_idx);
 add_thr_fibers_fail:
 	terminate_tx_fibers(conf.num_threads, fiber_idx);
-
 add_thr_xtm_to_tx_fail:
-	for (idx = conf.num_threads; idx < xtm_to_tx_idx; ++idx)
-		xtm_delete(conf.thread_ctxs[idx].queue_to_tx);
+	xtm_delete_queues_to_tx(conf.num_threads, xtm_to_tx_idx);
 
 	return lerr;
 }
@@ -4955,6 +4997,59 @@ reconfig_handler_security_listen_threads(lua_State *L, int idx,
 	return NULL;
 }
 
+/* Launched in TX thread. */
+static void
+unref_on_reconfig_failure(lua_State *L, unsigned generation)
+{
+	unsigned idx;
+	for (idx = 0; idx < conf.lua_site_count; ++idx) {
+		lua_site_t *const lua_site = &conf.lua_sites[idx];
+		if (lua_site->generation == generation)
+			luaL_unref(L, LUA_REGISTRYINDEX,
+				lua_site->new_lua_handler_ref);
+		else
+			lua_site->generation = generation;
+	}
+}
+
+/* Launched in TX thread. */
+static void
+unref_on_config_failure(lua_State *L, const lua_site_t *lua_sites,
+	unsigned lua_site_count)
+{
+	unsigned idx;
+	for (idx = 0; idx < lua_site_count; ++idx)
+		luaL_unref(L, LUA_REGISTRYINDEX,
+			lua_sites[idx].lua_handler_ref);
+}
+
+/* Launched in TX thread. */
+static const char *
+launch_reaper_fiber(void)
+{
+	if ((conf.reaper_fiber =
+	    fiber_new("reaper fiber", reaper_fiber_func)) == NULL)
+		return "Failed to create reaper fiber";
+	configure_and_start_reaper_fiber();
+	return NULL;
+}
+
+/* Launched in TX thread. */
+static const char *
+init_userdata(const path_desc_t *path_descs)
+{
+	if (path_descs == NULL)
+		return NULL;
+	const path_desc_t *path_desc = path_descs;
+	do {
+		if (path_desc->init_userdata_in_tx != NULL &&
+		    path_desc->init_userdata_in_tx(
+			    path_desc->init_userdata_in_tx_param))
+			return "Failed to init userdata";
+	} while ((++path_desc)->path != NULL);
+	return NULL;
+}
+
 /* N. b.: This macro uses goto. */
 #define PROCESS_OPTIONAL_PARAM(name) \
 	lua_getfield(L, LUA_STACK_IDX_TABLE, #name); \
@@ -5062,16 +5157,7 @@ reconfigure(lua_State *L)
 	return 0;
 
 invalid_handler:
-	;
-	unsigned idx;
-	for (idx = 0; idx < conf.lua_site_count; ++idx) {
-		lua_site_t *const lua_site = &conf.lua_sites[idx];
-		if (lua_site->generation == generation)
-			luaL_unref(L, LUA_REGISTRYINDEX,
-				lua_site->new_lua_handler_ref);
-		else
-			lua_site->generation = generation;
-	}
+	unref_on_reconfig_failure(L, generation);
 error_hot_reload_shuttle_size:
 error_parameter_not_a_number:
 error_hot_reload_c:
@@ -5120,9 +5206,6 @@ cfg(lua_State *L)
 		goto error_no_parameters;
 	}
 
-	unsigned thr_init_idx = 0;
-	unsigned fiber_idx = 0;
-	unsigned xtm_to_tx_idx = 0;
 	assert(!conf.cfg_in_progress);
 	conf.cfg_in_progress = true;
 	if (conf.is_shutdown_in_progress) {
@@ -5184,35 +5267,19 @@ cfg(lua_State *L)
 		"/dev/stdout", NULL);
 #endif
 
-	for (; xtm_to_tx_idx < conf.num_threads; ++xtm_to_tx_idx)
-		if ((conf.thread_ctxs[xtm_to_tx_idx].queue_to_tx =
-		    xtm_create(QUEUE_TO_TX_ITEMS)) == NULL) {
-			lerr = "Failed to create xtm queue";
-			goto xtm_to_tx_fail;
-		}
+	unsigned xtm_to_tx_idx = 0;
+	if ((lerr = create_xtm_queues_to_tx(&xtm_to_tx_idx, conf.num_threads))
+	    != NULL)
+		goto xtm_to_tx_fail;
 
+	unsigned fiber_idx = 0;
 	if ((lerr = start_tx_fibers(&fiber_idx, conf.num_threads)) != NULL)
 		goto fibers_fail;
-
-	if ((conf.reaper_fiber =
-	    fiber_new("reaper fiber", reaper_fiber_func)) == NULL) {
-		lerr = "Failed to create reaper fiber";
+	if ((lerr = launch_reaper_fiber()) != NULL)
 		goto reaper_fiber_fail;
-	}
-	configure_and_start_reaper_fiber();
-
-	if (path_descs != NULL) {
-		const path_desc_t *path_desc = path_descs;
-		do {
-			if (path_desc->init_userdata_in_tx != NULL &&
-			    path_desc->init_userdata_in_tx(
-				    path_desc->init_userdata_in_tx_param)) {
-				lerr = "Failed to init userdata";
-				goto userdata_init_fail;
-			}
-		} while ((++path_desc)->path != NULL);
-	}
-
+	if ((lerr = init_userdata(path_descs)) != NULL)
+		goto userdata_init_fail;
+	unsigned thr_init_idx = 0;
 	for (; thr_init_idx < conf.num_threads; ++thr_init_idx)
 		if (!init_worker_thread(thr_init_idx)) {
 			lerr = "Failed to init worker threads";
@@ -5242,45 +5309,26 @@ cfg(lua_State *L)
 	return 0;
 
 threads_launch_fail:
-	;
-	unsigned idx;
-	for (idx = 0; idx < thr_launch_idx; ++idx)
-		tell_thread_to_terminate_immediately(&conf.thread_ctxs[idx]);
-
-	for (idx = 0; idx < thr_launch_idx; ++idx)
-		pthread_join(conf.thread_ctxs[idx].tid, NULL);
-
+	terminate_and_join_threads(0, thr_launch_idx);
 threads_init_fail:
-	for (idx = 0; idx < thr_init_idx; ++idx)
-		deinit_worker_thread(idx);
+	deinit_worker_threads(0, thr_init_idx);
 userdata_init_fail:
 	terminate_reaper_fiber();
 reaper_fiber_fail:
 fibers_fail:
 	terminate_tx_fibers(0, fiber_idx);
 xtm_to_tx_fail:
-	for (idx = 0; idx < xtm_to_tx_idx; ++idx)
-		xtm_delete(conf.thread_ctxs[idx].queue_to_tx);
+	xtm_delete_queues_to_tx(0, xtm_to_tx_idx);
 	close_listener_cfgs_sockets();
 	deinit_listener_cfgs();
 	conf_sni_map_cleanup();
 invalid_handler:
-	for (idx = 0; idx < lua_site_count; ++idx) {
-		lua_site_t *const lua_site = &lua_sites[idx];
-		if (lua_site->lua_handler_ref != LUA_REFNIL)
-			luaL_unref(L, LUA_REGISTRYINDEX,
-				lua_site->lua_handler_ref);
-	}
+	unref_on_config_failure(L, lua_sites, lua_site_count);
 	free(lua_sites);
 c_desc_empty:
 register_host_failed:
 	/* N.b.: h2o currently can't "unregister" host(s). */
-	;
-	unsigned thread_idx;
-	for (thread_idx = 0; thread_idx < MAX_threads;
-	    ++thread_idx)
-		h2o_config_dispose(&conf.thread_ctxs[thread_idx]
-			.globalconf);
+	dispose_h2o_configs();
 	free(conf.thread_ctxs);
 thread_ctxs_alloc_failed:
 error_parameter_not_a_number:

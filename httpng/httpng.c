@@ -59,6 +59,10 @@
 #define SHOULD_FREE_RECV_DATA_IN_HTTP_SERVER_THREAD
 #undef SHOULD_FREE_RECV_DATA_IN_HTTP_SERVER_THREAD
 
+#ifndef SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD
+#define USE_SHUTTLES_MUTEX
+#endif /* SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD */
+
 /* When disabled, HTTP requests with body not fitting into shuttle are failed.
  * N. b.: h2o allocates memory for the WHOLE body in any case. */
 #define SUPPORT_SPLITTING_LARGE_BODY
@@ -149,8 +153,12 @@ typedef struct {
 		h2o_socket_t *read_socket; /* pipe underneath. */
 	} terminate_notifier;
 #endif /* USE_LIBUV */
+#ifdef USE_SHUTTLES_MUTEX
+	pthread_mutex_t shuttles_mutex;
+#endif /* USE_SHUTTLES_MUTEX */
 	h2o_linklist_t accepted_sockets;
 	httpng_sem_t can_be_terminated;
+	unsigned shuttle_counter;
 	unsigned num_connections;
 	unsigned idx;
 	unsigned active_lua_fibers;
@@ -371,6 +379,7 @@ static struct {
 	double thr_timeout_start;
 	uint64_t openssl_security_level;
 	long min_tls_proto_version;
+	unsigned max_shuttles_per_thread;
 	unsigned lua_site_count;
 	unsigned shuttle_size;
 	unsigned recv_data_size;
@@ -403,6 +412,7 @@ static struct {
 } conf = {
 	.tfo_queues = H2O_DEFAULT_LENGTH_TCP_FASTOPEN_QUEUE,
 	.on_shutdown_ref = LUA_REFNIL,
+	.max_shuttles_per_thread = 4096,
 };
 
 __thread thread_ctx_t *curr_thread_ctx;
@@ -2643,8 +2653,20 @@ register_router(lua_State *L, lua_site_t *lua_site,
 static inline shuttle_t *
 alloc_shuttle(thread_ctx_t *thread_ctx)
 {
+#ifdef USE_SHUTTLES_MUTEX
+	pthread_mutex_lock(&thread_ctx->shuttles_mutex);
+#endif /* USE_SHUTTLES_MUTEX */
+	if (++thread_ctx->shuttle_counter > conf.max_shuttles_per_thread) {
+		--thread_ctx->shuttle_counter;
+#ifdef USE_SHUTTLES_MUTEX
+		pthread_mutex_unlock(&thread_ctx->shuttles_mutex);
+#endif /* USE_SHUTTLES_MUTEX */
+		return NULL;
+	}
+#ifdef USE_SHUTTLES_MUTEX
+	pthread_mutex_unlock(&thread_ctx->shuttles_mutex);
+#endif /* USE_SHUTTLES_MUTEX */
 	/* FIXME: Use per-thread pools */
-	(void)thread_ctx;
 	shuttle_t *const shuttle = (shuttle_t *)malloc(conf.shuttle_size);
 	return shuttle;
 }
@@ -2654,6 +2676,14 @@ alloc_shuttle(thread_ctx_t *thread_ctx)
 void
 free_shuttle(shuttle_t *shuttle)
 {
+	thread_ctx_t *const thread_ctx = shuttle->thread_ctx;
+#ifdef USE_SHUTTLES_MUTEX
+	pthread_mutex_lock(&thread_ctx->shuttles_mutex);
+#endif /* USE_SHUTTLES_MUTEX */
+	--thread_ctx->shuttle_counter;
+#ifdef USE_SHUTTLES_MUTEX
+	pthread_mutex_unlock(&thread_ctx->shuttles_mutex);
+#endif /* USE_SHUTTLES_MUTEX */
 	free(shuttle);
 }
 
@@ -3594,6 +3624,13 @@ init_worker_thread(unsigned thread_idx)
 	int fd_consumed = 0;
 #endif /* USE_LIBUV */
 	thread_ctx_t *const thread_ctx = &conf.thread_ctxs[thread_idx];
+
+#ifdef USE_SHUTTLES_MUTEX
+	if (pthread_mutex_init(&thread_ctx->shuttles_mutex, NULL) != 0)
+		/* FIXME: Report. */
+		goto mutex_init_failed;
+#endif /* USE_SHUTTLES_MUTEX */
+
 	if ((thread_ctx->queue_from_tx = xtm_create(QUEUE_FROM_TX_ITEMS))
 	    == NULL)
 		/* FIXME: Report. */
@@ -3604,6 +3641,7 @@ init_worker_thread(unsigned thread_idx)
 		/* FIXME: Report. */
 		goto alloc_ctxs_failed;
 
+	thread_ctx->shuttle_counter = 0;
 	memset(&thread_ctx->ctx, 0, sizeof(thread_ctx->ctx));
 #ifdef USE_LIBUV
 	uv_loop_init(&thread_ctx->loop);
@@ -3671,6 +3709,10 @@ prepare_listening_sockets_failed:
 alloc_ctxs_failed:
 	my_xtm_delete_queue_from_tx(thread_ctx);
 alloc_xtm_failed:
+#ifdef USE_SHUTTLES_MUTEX
+	pthread_mutex_destroy(&thread_ctx->shuttles_mutex);
+mutex_init_failed:
+#endif /* USE_SHUTTLES_MUTEX */
 	return false;
 }
 
@@ -3898,6 +3940,10 @@ deinit_worker_thread(unsigned thread_idx)
 	/* FIXME: Should flush these queues first. */
 	my_xtm_delete_queue_from_tx(thread_ctx);
 	free(thread_ctx->listener_ctxs);
+	assert(thread_ctx->shuttle_counter == 0);
+#ifdef USE_SHUTTLES_MUTEX
+	pthread_mutex_destroy(&thread_ctx->shuttles_mutex);
+#endif /* USE_SHUTTLES_MUTEX */
 }
 
 /* Launched in TX thread. */
@@ -4265,6 +4311,10 @@ on_shutdown_internal(lua_State *L, bool called_from_callback)
 		    !thread_ctx->thread_finished)
 			fiber_sleep(0.001);
 		reap_finished_thread(thread_ctx);
+		assert(thread_ctx->shuttle_counter == 0);
+#ifdef USE_SHUTTLES_MUTEX
+		pthread_mutex_destroy(&thread_ctx->shuttles_mutex);
+#endif /* USE_SHUTTLES_MUTEX */
 	}
 	deinit_listener_cfgs();
 	unsigned idx;

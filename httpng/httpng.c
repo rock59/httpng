@@ -3568,6 +3568,23 @@ reset_thread_ctx(unsigned idx)
 #endif /* USE_LIBUV */
 }
 
+/* Launched in TX thread. */
+static void
+destroy_h2o_context_and_loop(thread_ctx_t *thread_ctx)
+{
+#ifdef USE_LIBUV
+	uv_loop_close(&thread_ctx->loop);
+#ifndef INIT_CTX_IN_HTTP_THREAD
+	h2o_context_dispose(&thread_ctx->ctx);
+#endif /* INIT_CTX_IN_HTTP_THREAD */
+#else /* USE_LIBUV */
+#ifndef INIT_CTX_IN_HTTP_THREAD
+	h2o_context_dispose(&thread_ctx->ctx);
+#endif /* INIT_CTX_IN_HTTP_THREAD */
+	h2o_evloop_destroy(thread_ctx->ctx.loop);
+#endif /* USE_LIBUV */
+}
+
 /* Launched in TX thread.
  * Returns false in case of error. */
 static bool
@@ -3648,17 +3665,7 @@ uv_tcp_init_failed:
 
 prepare_listening_sockets_failed:
 	close_listening_sockets(thread_ctx);
-#ifdef USE_LIBUV
-	uv_loop_close(&thread_ctx->loop);
-#ifndef INIT_CTX_IN_HTTP_THREAD
-	h2o_context_dispose(&thread_ctx->ctx);
-#endif /* INIT_CTX_IN_HTTP_THREAD */
-#else /* USE_LIBUV */
-#ifndef INIT_CTX_IN_HTTP_THREAD
-	h2o_context_dispose(&thread_ctx->ctx);
-#endif /* INIT_CTX_IN_HTTP_THREAD */
-	h2o_evloop_destroy(thread_ctx->ctx.loop);
-#endif /* USE_LIBUV */
+	destroy_h2o_context_and_loop(thread_ctx);
 
 	free(thread_ctx->listener_ctxs);
 alloc_ctxs_failed:
@@ -3886,17 +3893,7 @@ deinit_worker_thread(unsigned thread_idx)
 	h2o_evloop_run(loop, 0); /* To actually free memory. */
 #endif /* USE_LIBUV */
 
-#ifdef USE_LIBUV
-	uv_loop_close(&thread_ctx->loop);
-#ifndef INIT_CTX_IN_HTTP_THREAD
-	h2o_context_dispose(&thread_ctx->ctx);
-#endif /* INIT_CTX_IN_HTTP_THREAD */
-#else /* USE_LIBUV */
-#ifndef INIT_CTX_IN_HTTP_THREAD
-	h2o_context_dispose(&thread_ctx->ctx);
-#endif /* INIT_CTX_IN_HTTP_THREAD */
-	h2o_evloop_destroy(loop);
-#endif /* USE_LIBUV */
+	destroy_h2o_context_and_loop(thread_ctx);
 
 	/* FIXME: Should flush these queues first. */
 	my_xtm_delete_queue_from_tx(thread_ctx);
@@ -4085,19 +4082,7 @@ static void
 reap_finished_thread(thread_ctx_t *thread_ctx)
 {
 	pthread_join(thread_ctx->tid, NULL);
-
-#ifdef USE_LIBUV
-	uv_close((uv_handle_t *)&thread_ctx->uv_poll_from_tx, NULL);
-	uv_loop_close(&thread_ctx->loop);
-#ifndef INIT_CTX_IN_HTTP_THREAD
-	h2o_context_dispose(&thread_ctx->ctx);
-#endif /* INIT_CTX_IN_HTTP_THREAD */
-#else /* USE_LIBUV */
-#ifndef INIT_CTX_IN_HTTP_THREAD
-	h2o_context_dispose(&thread_ctx->ctx);
-#endif /* INIT_CTX_IN_HTTP_THREAD */
-	h2o_evloop_destroy(thread_ctx->ctx.loop);
-#endif /* USE_LIBUV */
+	destroy_h2o_context_and_loop(thread_ctx);
 
 	if (!thread_ctx->tx_fiber_finished) {
 		assert(thread_ctx->fiber_to_wake_on_shutdown == NULL);

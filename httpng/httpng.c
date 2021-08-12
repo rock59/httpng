@@ -168,6 +168,7 @@ typedef struct {
 	unsigned listeners_created;
 	pthread_t tid;
 	bool xtm_queues_flushed;
+	bool shutdown_req_sent; /* TX -> HTTP(S) server thread. */
 	bool shutdown_requested; /* Someone asked us to shut down thread. */
 	bool use_graceful_shutdown;
 	bool do_not_exit_tx_fiber;
@@ -3594,6 +3595,7 @@ reset_thread_ctx(unsigned idx)
 
 	thread_ctx->should_notify_tx_done = false;
 	thread_ctx->tx_fiber_should_exit = false;
+	thread_ctx->shutdown_req_sent = false;
 	thread_ctx->shutdown_requested = false;
 	thread_ctx->use_graceful_shutdown = true;
 	thread_ctx->tx_done_notification_received = false;
@@ -4056,6 +4058,9 @@ deinit_terminate_notifier(thread_ctx_t *thread_ctx)
 static void
 tell_thread_to_terminate_internal(thread_ctx_t *thread_ctx)
 {
+	if (thread_ctx->shutdown_req_sent)
+		return;
+	thread_ctx->shutdown_req_sent = true;
 	httpng_sem_wait(&thread_ctx->can_be_terminated);
 #ifdef USE_LIBUV
 	uv_async_send(&thread_ctx->terminate_notifier);

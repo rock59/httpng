@@ -4079,17 +4079,37 @@ setup_on_shutdown(lua_State *L, bool setup, bool called_from_callback)
 
 /* Launched in TX thread. */
 static void
+wait_for_exiting_tx_fiber(thread_ctx_t *thread_ctx)
+{
+	struct fiber *const next_fiber_to_wake =
+		thread_ctx->fiber_to_wake_on_shutdown;
+	thread_ctx->fiber_to_wake_on_shutdown = fiber_self();
+	fiber_yield();
+	assert(thread_ctx->tx_fiber_finished);
+	if (next_fiber_to_wake != NULL)
+		fiber_wakeup(next_fiber_to_wake);
+}
+
+/* Launched in TX thread. */
+static void
 reap_finished_thread(thread_ctx_t *thread_ctx)
 {
 	pthread_join(thread_ctx->tid, NULL);
 	destroy_h2o_context_and_loop(thread_ctx);
 
-	if (!thread_ctx->tx_fiber_finished) {
-		assert(thread_ctx->fiber_to_wake_on_shutdown == NULL);
-		thread_ctx->fiber_to_wake_on_shutdown = fiber_self();
-		fiber_yield();
+	struct fiber * *const tx_fiber = &conf.tx_fiber_ptrs[thread_ctx->idx];
+	if (*tx_fiber != NULL) {
+		if (thread_ctx->tx_fiber_finished) {
+			fiber_join(*tx_fiber);
+			*tx_fiber = NULL;
+		} else {
+			wait_for_exiting_tx_fiber(thread_ctx);
+			if (*tx_fiber != NULL) {
+				fiber_join(*tx_fiber);
+				*tx_fiber = NULL;
+			}
+		}
 	}
-	assert(thread_ctx->tx_fiber_finished);
 
 	free(thread_ctx->listener_ctxs);
 	xtm_delete(thread_ctx->queue_to_tx);
@@ -4409,13 +4429,33 @@ terminate_tx_fibers(unsigned start_idx, unsigned start_idx_plus_len)
 {
 	unsigned idx;
 	for (idx = start_idx; idx < start_idx_plus_len; ++idx) {
-		conf.thread_ctxs[idx].tx_fiber_should_exit = true;
-		__sync_synchronize();
-		fiber_cancel(conf.tx_fiber_ptrs[idx]);
+		struct fiber *const fiber = conf.tx_fiber_ptrs[idx];
+		if (fiber == NULL)
+			continue;
+
+		thread_ctx_t *const thread_ctx = &conf.thread_ctxs[idx];
+
+		/* Do not use fiber_cancel() because state variables
+		 * may not be set.
+		 * Using xtm is safe because threads have finished. */
+		if (!thread_ctx->tx_fiber_should_exit)
+			call_via_xtm(thread_ctx->queue_to_tx,
+				tell_tx_fiber_to_exit, thread_ctx);
 	}
-	for (idx = start_idx; idx < start_idx_plus_len; ++idx)
-		while (!conf.thread_ctxs[idx].tx_fiber_finished)
-			fiber_sleep(0.001);
+	for (idx = start_idx; idx < start_idx_plus_len; ++idx) {
+		thread_ctx_t *const thread_ctx = &conf.thread_ctxs[idx];
+		if (thread_ctx->tx_fiber_finished)
+			continue;
+
+		wait_for_exiting_tx_fiber(thread_ctx);
+	}
+	for (idx = start_idx; idx < start_idx_plus_len; ++idx) {
+		struct fiber * *const fiber = &conf.tx_fiber_ptrs[idx];
+		if (*fiber == NULL)
+			continue;
+		fiber_join(*fiber);
+		*fiber = NULL;
+	}
 }
 
 /* Launched in TX thread. */

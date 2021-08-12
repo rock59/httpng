@@ -78,6 +78,7 @@
 
 #define DEFAULT_threads 1
 #define DEFAULT_max_conn_per_thread (256 * 1024)
+#define DEFAULT_max_shuttles_per_thread 4096
 #define DEFAULT_shuttle_size 65536
 #define DEFAULT_max_body_len (1024 * 1024)
 #define DEFAULT_thread_termination_timeout 60
@@ -85,15 +86,17 @@
 /* Limits are quite relaxed for now. */
 #define MIN_threads 1
 #define MIN_max_conn_per_thread 1
+#define MIN_max_shuttles_per_thread 1
 #define MIN_shuttle_size (sizeof(shuttle_t) + sizeof(uintptr_t))
 #define MIN_max_body_len 0
 
 /* Limits are quite relaxed for now. */
 #define MAX_threads 16 /* More than 4 is hardly useful (Lua). */
 #define MAX_max_conn_per_thread (256 * 1024 * 1024)
+typedef unsigned shuttle_count_t;
+#define MAX_max_shuttles_per_thread UINT_MAX
 #define MAX_shuttle_size (16 * 1024 * 1024)
 #define MAX_max_body_len LLONG_MAX
-
 
 /* N.b.: for SSL3 to work you should probably use custom OpenSSL build. */
 #define SSL3_STR "ssl3"
@@ -158,7 +161,7 @@ typedef struct {
 #endif /* USE_SHUTTLES_MUTEX */
 	h2o_linklist_t accepted_sockets;
 	httpng_sem_t can_be_terminated;
-	unsigned shuttle_counter;
+	shuttle_count_t shuttle_counter;
 	unsigned num_connections;
 	unsigned idx;
 	unsigned active_lua_fibers;
@@ -379,7 +382,7 @@ static struct {
 	double thr_timeout_start;
 	uint64_t openssl_security_level;
 	long min_tls_proto_version;
-	unsigned max_shuttles_per_thread;
+	shuttle_count_t max_shuttles_per_thread;
 	unsigned lua_site_count;
 	unsigned shuttle_size;
 	unsigned recv_data_size;
@@ -412,7 +415,7 @@ static struct {
 } conf = {
 	.tfo_queues = H2O_DEFAULT_LENGTH_TCP_FASTOPEN_QUEUE,
 	.on_shutdown_ref = LUA_REFNIL,
-	.max_shuttles_per_thread = 4096,
+	.max_shuttles_per_thread = DEFAULT_max_shuttles_per_thread,
 };
 
 __thread thread_ctx_t *curr_thread_ctx;
@@ -2653,6 +2656,8 @@ register_router(lua_State *L, lua_site_t *lua_site,
 static inline shuttle_t *
 alloc_shuttle(thread_ctx_t *thread_ctx)
 {
+	STATIC_ASSERT(sizeof(shuttle_count_t) >= sizeof(unsigned),
+		"MAX_max_shuttles_per_thread may be too large");
 #ifdef USE_SHUTTLES_MUTEX
 	pthread_mutex_lock(&thread_ctx->shuttles_mutex);
 #endif /* USE_SHUTTLES_MUTEX */
@@ -4922,6 +4927,7 @@ apply_max_body_len(uint64_t max_body_len)
 /* Launched in TX thread. */
 static inline void
 apply_new_config(uint64_t max_body_len, uint64_t max_conn_per_thread,
+	shuttle_count_t max_shuttles_per_thread,
 	double thread_termination_timeout
 #ifdef SUPPORT_SPLITTING_LARGE_BODY
 	, bool use_body_split
@@ -4932,6 +4938,7 @@ apply_new_config(uint64_t max_body_len, uint64_t max_conn_per_thread,
 	conf.use_body_split = use_body_split;
 #endif /* SUPPORT_SPLITTING_LARGE_BODY */
 	conf.max_conn_per_thread = max_conn_per_thread;
+	conf.max_shuttles_per_thread = max_shuttles_per_thread;
 #ifndef USE_LIBUV
 	conf.num_accepts = max_conn_per_thread / 16;
 	if (conf.num_accepts < 8)
@@ -5156,6 +5163,7 @@ init_userdata(const path_desc_t *path_descs)
 	int is_integer; \
 	PROCESS_OPTIONAL_PARAM(threads); \
 	PROCESS_OPTIONAL_PARAM(max_conn_per_thread); \
+	PROCESS_OPTIONAL_PARAM(max_shuttles_per_thread); \
 	PROCESS_OPTIONAL_PARAM(shuttle_size); \
 	PROCESS_OPTIONAL_PARAM(max_body_len); \
 	/* FIXME: Maybe we need to configure tfo_queues? */
@@ -5218,7 +5226,7 @@ reconfigure(lua_State *L)
 		goto invalid_handler;
 
 	apply_new_config(max_body_len, max_conn_per_thread,
-		thread_termination_timeout
+		max_shuttles_per_thread, thread_termination_timeout
 #ifdef SUPPORT_SPLITTING_LARGE_BODY
 		, use_body_split
 #endif /* SUPPORT_SPLITTING_LARGE_BODY */
@@ -5362,7 +5370,7 @@ cfg(lua_State *L)
 		}
 
 	apply_new_config(max_body_len, max_conn_per_thread,
-		thread_termination_timeout
+		max_shuttles_per_thread, thread_termination_timeout
 #ifdef SUPPORT_SPLITTING_LARGE_BODY
 		, use_body_split
 #endif /* SUPPORT_SPLITTING_LARGE_BODY */

@@ -3595,6 +3595,7 @@ reset_thread_ctx(unsigned idx)
 	thread_ctx->should_notify_tx_done = false;
 	thread_ctx->tx_fiber_should_exit = false;
 	thread_ctx->shutdown_requested = false;
+	thread_ctx->use_graceful_shutdown = true;
 	thread_ctx->tx_done_notification_received = false;
 	thread_ctx->tx_fiber_finished = false;
 	thread_ctx->thread_finished = false;
@@ -3798,17 +3799,18 @@ close_existing_connections(thread_ctx_t *thread_ctx)
 
 /* Launched in HTTP server thread. */
 static void
-prepare_for_shutdown(thread_ctx_t *thread_ctx)
+prepare_worker_for_shutdown(thread_ctx_t *thread_ctx,
+	bool use_graceful_shutdown)
 {
 	/* FIXME: If we want to send something through existing
 	 * connections, should do it now (accepts are already
 	 * blocked). */
 
-	if (thread_ctx->use_graceful_shutdown)
+	if (use_graceful_shutdown)
 		h2o_context_request_shutdown(&thread_ctx->ctx);
 	else
 		close_existing_connections(thread_ctx);
-	thread_ctx->do_not_exit_tx_fiber = thread_ctx->use_graceful_shutdown;
+	thread_ctx->do_not_exit_tx_fiber = use_graceful_shutdown;
 
 	fprintf(stderr, "Thread #%u: shutdown request received, "
 		"waiting for TX processing to complete...\n",
@@ -3818,14 +3820,16 @@ prepare_for_shutdown(thread_ctx_t *thread_ctx)
 
 /* Launched in HTTP server thread. */
 static void
-handle_graceful_shutdown(thread_ctx_t *thread_ctx)
+handle_worker_shutdown(thread_ctx_t *thread_ctx, bool use_graceful_shutdown)
 {
-	if (!thread_ctx->use_graceful_shutdown)
+	if (!use_graceful_shutdown)
 		goto done;
 
 	close_existing_connections(thread_ctx);
 
 	/* There can still be requests in flight. */
+	assert(thread_ctx->do_not_exit_tx_fiber);
+	assert(thread_ctx->tx_done_notification_received);
 	thread_ctx->tx_done_notification_received = false;
 	thread_ctx->do_not_exit_tx_fiber = false;
 	call_in_tx_finish_processing_lua_reqs(thread_ctx);
@@ -3875,12 +3879,13 @@ worker_func(void *param)
 	uv_read_stop((uv_stream_t *)&listener_ctx->uv_tcp_listener);
 	uv_close((uv_handle_t *)&listener_ctx->uv_tcp_listener, NULL);
 
-	prepare_for_shutdown(thread_ctx);
+	const bool use_graceful_shutdown = thread_ctx->use_graceful_shutdown;
+	prepare_worker_for_shutdown(thread_ctx, use_graceful_shutdown);
 
 	/* Process remaining requests from TX thread. */
 	uv_run(&thread_ctx->loop, UV_RUN_DEFAULT);
 	assert(thread_ctx->tx_done_notification_received);
-	handle_graceful_shutdown(thread_ctx);
+	handle_worker_shutdown(thread_ctx, use_graceful_shutdown);
 #else /* USE_LIBUV */
 	thread_ctx->sock_from_tx =
 		h2o_evloop_socket_create(thread_ctx->ctx.loop,
@@ -3897,12 +3902,13 @@ worker_func(void *param)
 	listening_sockets_stop_read(thread_ctx);
 	close_listening_sockets(thread_ctx);
 
-	prepare_for_shutdown(thread_ctx);
+	const bool use_graceful_shutdown = thread_ctx->use_graceful_shutdown;
+	prepare_worker_for_shutdown(thread_ctx, use_graceful_shutdown);
 
 	/* Process remaining requests from TX thread. */
 	while (!thread_ctx->tx_done_notification_received)
 		h2o_evloop_run(loop, 1);
-	handle_graceful_shutdown(thread_ctx);
+	handle_worker_shutdown(thread_ctx, use_graceful_shutdown);
 
 	h2o_socket_read_stop(thread_ctx->sock_from_tx);
 	h2o_socket_close(thread_ctx->sock_from_tx);
@@ -4048,10 +4054,8 @@ deinit_terminate_notifier(thread_ctx_t *thread_ctx)
 
 /* Launched in TX thread. */
 static void
-tell_thread_to_terminate_internal(thread_ctx_t *thread_ctx,
-	bool use_graceful_shutdown)
+tell_thread_to_terminate_internal(thread_ctx_t *thread_ctx)
 {
-	thread_ctx->use_graceful_shutdown = use_graceful_shutdown;
 	httpng_sem_wait(&thread_ctx->can_be_terminated);
 #ifdef USE_LIBUV
 	uv_async_send(&thread_ctx->terminate_notifier);
@@ -4066,14 +4070,19 @@ tell_thread_to_terminate_internal(thread_ctx_t *thread_ctx,
 static inline void
 tell_thread_to_terminate_immediately(thread_ctx_t *thread_ctx)
 {
-	tell_thread_to_terminate_internal(thread_ctx, false);
+	thread_ctx->use_graceful_shutdown = false;
+	__sync_synchronize();
+	/* FIXME: Should we explicitly request connections to be closed?
+	 * Thread may already be terminating gracefully. */
+	tell_thread_to_terminate_internal(thread_ctx);
 }
 
 /* Launched in TX thread. */
 static inline void
 tell_thread_to_terminate_gracefully(thread_ctx_t *thread_ctx)
 {
-	tell_thread_to_terminate_internal(thread_ctx, true);
+	assert(thread_ctx->use_graceful_shutdown);
+	tell_thread_to_terminate_internal(thread_ctx);
 }
 
 /* Launched in TX thread. */

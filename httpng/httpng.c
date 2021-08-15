@@ -1822,7 +1822,7 @@ perform_close(lua_State *L)
 
 /* Launched in TX thread. */
 static void
-finish_handler_failure_processing(shuttle_func_t *func, shuttle_t *shuttle)
+finish_handler_processing(shuttle_func_t *func, shuttle_t *shuttle)
 {
 	call_in_http_thr_with_shuttle(func, shuttle);
 	lua_handler_state_t *const state =
@@ -1873,7 +1873,7 @@ process_handler_failure_not_ws(shuttle_t *shuttle)
 		state->sent_something = true;
 		func = &postprocess_lua_req_first;
 	}
-	finish_handler_failure_processing(func, shuttle);
+	finish_handler_processing(func, shuttle);
 }
 
 /* Launched in TX thread. */
@@ -1922,21 +1922,12 @@ process_handler_success_not_ws_with_send(lua_State *L, shuttle_t *shuttle)
 	state->un.resp.any.is_last_send = true;
 
 	if (old_sent_something)
-		call_in_http_thr_postprocess_lua_req_others(shuttle);
+		finish_handler_processing(postprocess_lua_req_others, shuttle);
 	else {
 		state->un.resp.first.content_length =
 			state->un.resp.any.payload_len;
-		call_in_http_thr_postprocess_lua_req_first(shuttle);
+		finish_handler_processing(postprocess_lua_req_first, shuttle);
 	}
-	wait_for_lua_shuttle_return(state);
-	if (state->cancelled)
-		/* There would be no more calls from HTTP
-		 * server thread, must clean up. */
-		free_lua_shuttle_from_tx_in_http_thr(shuttle);
-	else
-		state->fiber_done = true;
-		/* cancel_processing_lua_req_in_tx() is not yet called,
-		 * it would clean up because we have set fiber_done=true */
 }
 
 /* Launched in TX thread. */
@@ -2059,7 +2050,7 @@ process_internal_error(shuttle_t *shuttle)
 	state->un.resp.first.content_length = sizeof(error_str) - 1;
 	state->sent_something = true;
 
-	finish_handler_failure_processing(&postprocess_lua_req_first, shuttle);
+	finish_handler_processing(&postprocess_lua_req_first, shuttle);
 }
 
 /* Launched in TX thread. */

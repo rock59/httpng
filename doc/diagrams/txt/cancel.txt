@@ -1,0 +1,39 @@
+title HTTPNG threads interaction concept (cancellation example)
+
+participant HTTP(S) worker thread
+
+
+participant [
+
+
+participant Per-request fiber
+
+
+participant TX (one of httpng fibers)
+
+[->HTTP(S) worker thread:HTTP(S) request from client
+box over HTTP(S) worker thread#yellow:Allocate `shuttle`
+box over HTTP(S) worker thread:Parse HTTP(S) request, pack it into `shuttle`
+HTTP(S) worker thread->TX (one of httpng fibers):`shuttle` with parsed HTTP(S) request
+note over HTTP(S) worker thread:Sleep or handle something else
+[->HTTP(S) worker thread:TCP reset
+box over HTTP(S) worker thread#red:TCP connection closed
+box over TX (one of httpng fibers):Create new fiber
+TX (one of httpng fibers)->*Per-request fiber:`shuttle`
+HTTP(S) worker thread-#brown>(3)TX (one of httpng fibers):`shuttle` with cancellation request
+box over Per-request fiber:Fill in Lua table with request data
+rbox over Per-request fiber #green:<color:#white>Call user handler</color>
+box over Per-request fiber:write_header()
+box over TX (one of httpng fibers):cancelled = true
+box over Per-request fiber:Fill `shuttle` with HTTP(S) headers and (part of) body
+HTTP(S) worker thread<-Per-request fiber:Send `shuttle` with response
+note over Per-request fiber:Sleep until `shuttle` returns
+box over HTTP(S) worker thread #red:Ignore HTTP(S) send
+Per-request fiber<-TX (one of httpng fibers):Wake sleeping fiber
+box over Per-request fiber#red:Ignore write()
+box over Per-request fiber#red:Ignore close()
+rbox over Per-request fiber #green:<color:#white>Exit user handler</color>
+HTTP(S) worker thread<-Per-request fiber:Request to free `shuttle`
+abox over Per-request fiber:Exit fiber
+destroyafter Per-request fiber
+box over HTTP(S) worker thread #yellow:Free `shuttle`

@@ -1,0 +1,55 @@
+title HTTPNG threads interaction concept (proposed design, stage 3, "unlucky but in time")
+
+participant HTTP(S) worker thread
+
+
+participant [
+
+
+participant Per-request fiber
+
+
+participant TX (one of httpng fibers)
+
+[->HTTP(S) worker thread:HTTP(S) request from client
+box over HTTP(S) worker thread#yellow:Allocate `shuttle`
+box over HTTP(S) worker thread:Parse HTTP(S) request, pack it into `shuttle`
+HTTP(S) worker thread->TX (one of httpng fibers):`shuttle` with parsed HTTP(S) request
+note over HTTP(S) worker thread:Sleep or handle something else
+box over TX (one of httpng fibers):Create new fiber
+TX (one of httpng fibers)->*Per-request fiber:`shuttle`
+box over Per-request fiber:Fill in Lua table with request data
+rbox over Per-request fiber #green:<color:#white>Call user handler</color>
+box over Per-request fiber:write_header()
+box over Per-request fiber:Fill `shuttle` with HTTP(S) headers and (part of) body
+box over Per-request fiber:Ref Lua strings, mark `shuttle` as owned by HTTP(S) thread
+HTTP(S) worker thread<-Per-request fiber:Send `shuttle` with response
+box over Per-request fiber:Do something useful
+box over HTTP(S) worker thread:Format HTTP(S) response
+[<-HTTP(S) worker thread:HTTP(S) response to client
+box over Per-request fiber:write()
+note over Per-request fiber:Sleep until `shuttle` returns
+HTTP(S) worker thread->TX (one of httpng fibers):"Continue" notification
+note over TX (one of httpng fibers):Mark shuttle as owned by TX
+Per-request fiber<-TX (one of httpng fibers):Wake sleeping fiber
+box over Per-request fiber:Unref old Lua strings
+box over Per-request fiber:Fill `shuttle` with (part of) HTTP(S) body
+box over Per-request fiber:Ref Lua strings, mark `shuttle` as owned by HTTP(S) thread
+HTTP(S) worker thread<-Per-request fiber:Send `shuttle` with response
+box over Per-request fiber:Do something useful #2
+box over Per-request fiber:close()
+box over Per-request fiber#blue:<color:#white>Mark `shuttle` as `must close request`</color>
+HTTP(S) worker thread<--Per-request fiber:<color:#blue>Atomic `shuttle` modification</color>
+box over Per-request fiber:Do something useful #3
+box over HTTP(S) worker thread:Send (more) HTTP(S) body
+[<-HTTP(S) worker thread:HTTP(S) body + "end of chunked" etc to client
+HTTP(S) worker thread->TX (one of httpng fibers):<color:#blue>"Request closed" notification</color>
+note over TX (one of httpng fibers):Mark shuttle as owned by TX
+box over TX (one of httpng fibers):Unref old Lua strings
+rbox over Per-request fiber #green:<color:#white>Exit user handler</color>
+note over Per-request fiber:Sleep until `shuttle` returns
+Per-request fiber<-TX (one of httpng fibers):Wake sleeping fiber
+HTTP(S) worker thread<-Per-request fiber:Request to free `shuttle`
+abox over Per-request fiber:Exit fiber
+destroyafter Per-request fiber
+box over HTTP(S) worker thread #yellow:Free `shuttle`

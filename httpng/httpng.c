@@ -1414,7 +1414,7 @@ perform_ws_send_text(lua_State *L)
 	if (num_params < LUA_STACK_REQUIRED_PARAMS_COUNT)
 		return luaL_error(L, "Not enough parameters");
 
-	lua_getfield(L, LUA_STACK_IDX_PAYLOAD, shuttle_field_name);
+	lua_getfield(L, LUA_STACK_IDX_SELF, shuttle_field_name);
 	if (!lua_islightuserdata(L, -1))
 		return luaL_error(L, "shuttle is invalid");
 	shuttle_t *const shuttle = (shuttle_t *)lua_touserdata(L, -1);

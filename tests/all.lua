@@ -1266,7 +1266,7 @@ end
 
 g_good_handlers.test_write_header_handler_http2_insecure = function()
     ensure_http2()
-    test_req_encryption_info('--http2')
+    test_write_header_handler('--http2')
 end
 
 g_good_handlers.test_write_header_handler_http1_tls = function()
@@ -1274,7 +1274,7 @@ g_good_handlers.test_write_header_handler_http1_tls = function()
 end
 
 g_good_handlers.test_write_header_handler_http1_insecure = function()
-    test_req_encryption_info('--http1.1')
+    test_write_header_handler('--http1.1')
 end
 
 g_good_handlers.test_write_handler_http2_tls = function()

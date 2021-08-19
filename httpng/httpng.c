@@ -9,6 +9,7 @@
 #include <xtm/xtm_api.h>
 
 #include <h2o/websocket.h>
+#include <h2o/serverutil.h>
 #include "../third_party/h2o/deps/cloexec/cloexec.h"
 #include "httpng_sem.h"
 #include <openssl/err.h>
@@ -2439,9 +2440,7 @@ lua_req_handler_ex(h2o_req_t *req,
 	socklen = req->conn->callbacks->get_sockname(req->conn,
 		(struct sockaddr *)&state->ouraddr);
 	assert(socklen <= sizeof(state->ouraddr));
-	/* FIXME: Modify libh2o to avoid calling function through pointer */
-	state->un.req.is_encrypted =
-		(req->conn->callbacks->get_socket(req->conn)->ssl != NULL);
+	state->un.req.is_encrypted = h2o_is_req_transport_encrypted(req);
 
 	if (xtm_fun_dispatch(get_queue_to_tx(),
 	    (void(*)(void *))&process_lua_req_in_tx, shuttle, 0)) {
@@ -3737,9 +3736,6 @@ call_in_tx_finish_processing_lua_reqs(thread_ctx_t *thread_ctx)
 static inline void
 tell_close_connection(our_sock_t *item)
 {
-	static const char err[] = "shutting down";
-	/* Using read callback is faster and futureproof but, alas,
-	 * we can't do this if it is NULL. */
 #ifdef USE_LIBUV
 	struct st_h2o_uv_socket_t *const uv_sock = item->super.data;
 
@@ -3750,29 +3746,7 @@ tell_close_connection(our_sock_t *item)
 #else /* USE_LIBUV */
 	h2o_socket_t *const sock = &item->super.super;
 #endif /* USE_LIBUV */
-	h2o_socket_read_stop(sock);
-	/* Alas, we have to find proper handler ourself. */
-	switch (sock->proto) {
-	case SOCK_PROTO_SSL:
-		h2o_ssl_on_handshake_complete(sock, err);
-		break;
-	case SOCK_PROTO_HTTP1:
-		h2o_http1_reqread_on_read(sock, err);
-		break;
-	case SOCK_PROTO_HTTP2:
-		h2o_force_http2_close_connection_now(
-			(h2o_http2_conn_t *)sock->data);
-		break;
-	case SOCK_PROTO_EXPECT_PROXY:
-		/* FIXME: Looks like this would never happen. */
-		h2o_on_read_proxy_line(sock, err);
-		break;
-	case SOCK_PROTO_WEBSOCKET:
-		h2o_websocket_on_recv(sock, err);
-		break;
-	default:
-		assert(!"Invalid sock proto");
-	}
+	h2o_close_working_socket(sock);
 }
 
 /* Launched in HTTP server thread. */

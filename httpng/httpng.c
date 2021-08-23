@@ -6,7 +6,7 @@
 #include <lauxlib.h>
 #include <module.h>
 
-#include <xtm/xtm_api.h>
+#include <xtm/src/xtm_api.h>
 
 #include <h2o/websocket.h>
 #include <h2o/serverutil.h>
@@ -464,12 +464,12 @@ static int on_shutdown_callback(lua_State *L);
 static inline void
 my_xtm_delete_queue_from_tx(thread_ctx_t *thread_ctx)
 {
+	xtm_queue_delete(thread_ctx->queue_from_tx,
+		XTM_QUEUE_MUST_CLOSE_PRODUCER_READFD | (
 #ifndef USE_LIBUV
-	if (thread_ctx->queue_from_tx_fd_consumed)
-		xtm_delete_ex(thread_ctx->queue_from_tx);
-	else
+		thread_ctx->queue_from_tx_fd_consumed ? 0 :
 #endif /* USE_LIBUV */
-		xtm_delete(thread_ctx->queue_from_tx);
+		XTM_QUEUE_MUST_CLOSE_CONSUMER_READFD));
 }
 
 /* Launched in TX thread. */
@@ -532,9 +532,11 @@ h2o_linklist_unlink_fast(h2o_linklist_t *node)
 static inline void
 xtm_fun_invoke_all(struct xtm_queue *queue)
 {
-	int rc = xtm_fun_invoke(queue, 1);
-	while (rc >= 0 && xtm_msg_count(queue) > 0)
-		rc = xtm_fun_invoke(queue, 0);
+	if (xtm_queue_invoke_funs_all(queue) != 0) {
+		/* FIXME: Implement producer notification so it can sleep
+		 * instead of polling
+		 * (XTM_QUEUE_PRODUCER_NEEDS_NOTIFICATIONS). */
+	}
 }
 
 /* Launched in HTTP server thread. */
@@ -611,15 +613,27 @@ call_in_tx_with_shuttle(shuttle_func_t *func, shuttle_t *shuttle)
 	call_via_xtm_with_shuttle(get_queue_to_tx(), func, shuttle);
 }
 
+/* Can be launched in TX thread or HTTP server thread. */
+static inline void
+reliably_notify_xtm_consumer(struct xtm_queue *queue)
+{
+	while (xtm_queue_notify_consumer(queue) != 0) {
+		/* Actually notification should never fail, but... */
+		assert(false);
+		fiber_sleep(0.001);
+	}
+}
+
 /* Can be launched in TX thread or HTTP server thread.
  * Called when dispatch must not fail. */
 void
 stubborn_dispatch_uni(struct xtm_queue *queue, void *func, void *param)
 {
-	while (xtm_fun_dispatch(queue, (void (*)(void*))func, param, 0)) {
+	while (xtm_queue_push_fun(queue, (void (*)(void *))func, param, 0) != 0) {
 		/* Error; we must not fail so retry a little later. */
 		fiber_sleep(0);
 	}
+	reliably_notify_xtm_consumer(queue);
 }
 
 /* Can be launched in TX thread or HTTP server thread.
@@ -2442,8 +2456,9 @@ lua_req_handler_ex(h2o_req_t *req,
 	assert(socklen <= sizeof(state->ouraddr));
 	state->un.req.is_encrypted = h2o_is_req_transport_encrypted(req);
 
-	if (xtm_fun_dispatch(get_queue_to_tx(),
-	    (void(*)(void *))&process_lua_req_in_tx, shuttle, 0)) {
+	struct xtm_queue *const queue = get_queue_to_tx();
+	if (xtm_queue_push_fun(queue,
+	    (void(*)(void *))&process_lua_req_in_tx, shuttle, 0) != 0) {
 		/* Error */
 		free_shuttle_with_anchor(shuttle);
 		req->res.status = 500;
@@ -2451,6 +2466,7 @@ lua_req_handler_ex(h2o_req_t *req,
 		h2o_send_inline(req, H2O_STRLIT("Queue overflow\n"));
 		return;
 	}
+	reliably_notify_xtm_consumer(queue);
 	shuttle->anchor->user_free_shuttle = &free_shuttle_lua;
 }
 
@@ -3629,7 +3645,7 @@ init_worker_thread(unsigned thread_idx)
 		goto mutex_init_failed;
 #endif /* USE_SHUTTLES_MUTEX */
 
-	if ((thread_ctx->queue_from_tx = xtm_create(QUEUE_FROM_TX_ITEMS))
+	if ((thread_ctx->queue_from_tx = xtm_queue_new(QUEUE_FROM_TX_ITEMS))
 	    == NULL)
 		/* FIXME: Report. */
 		goto alloc_xtm_failed;
@@ -3676,7 +3692,7 @@ init_worker_thread(unsigned thread_idx)
 		goto uv_listen_failed;
 
 	if (uv_poll_init(thread_ctx->ctx.loop, &thread_ctx->uv_poll_from_tx,
-	    xtm_fd(thread_ctx->queue_from_tx)))
+	    xtm_queue_consumer_fd(thread_ctx->queue_from_tx)))
 		/* FIXME: Should report. */
 		goto uv_poll_init_failed;
 	if (uv_poll_start(&thread_ctx->uv_poll_from_tx, UV_READABLE,
@@ -3856,7 +3872,7 @@ worker_func(void *param)
 #else /* USE_LIBUV */
 	thread_ctx->sock_from_tx =
 		h2o_evloop_socket_create(thread_ctx->ctx.loop,
-			xtm_fd(thread_ctx->queue_from_tx),
+			xtm_queue_consumer_fd(thread_ctx->queue_from_tx),
 			H2O_SOCKET_FLAG_DONT_READ);
 
 	h2o_socket_read_start(thread_ctx->sock_from_tx, on_call_from_tx);
@@ -3932,7 +3948,7 @@ tx_fiber_func(va_list ap)
 	/* This fiber processes requests from particular thread */
 	thread_ctx_t *const thread_ctx = &conf.thread_ctxs[fiber_idx];
 	struct xtm_queue *const queue_to_tx = thread_ctx->queue_to_tx;
-	const int pipe_fd = xtm_fd(queue_to_tx);
+	const int pipe_fd = xtm_queue_consumer_fd(queue_to_tx);
 	/* thread_ctx->tx_fiber_should_exit is read non-atomically for
 	 * performance reasons so it should be changed in this thread by
 	 * queueing corresponding function call. */
@@ -4142,7 +4158,9 @@ reap_finished_thread(thread_ctx_t *thread_ctx)
 	}
 
 	free(thread_ctx->listener_ctxs);
-	xtm_delete(thread_ctx->queue_to_tx);
+	xtm_queue_delete(thread_ctx->queue_to_tx,
+		XTM_QUEUE_MUST_CLOSE_PRODUCER_READFD |
+		XTM_QUEUE_MUST_CLOSE_CONSUMER_READFD);
 	my_xtm_delete_queue_from_tx(thread_ctx);
 }
 
@@ -4542,7 +4560,9 @@ xtm_delete_queues_to_tx(unsigned start_idx, unsigned start_idx_plus_len)
 {
 	unsigned idx;
 	for (idx = start_idx; idx < start_idx_plus_len; ++idx)
-		xtm_delete(conf.thread_ctxs[idx].queue_to_tx);
+		xtm_queue_delete(conf.thread_ctxs[idx].queue_to_tx,
+			XTM_QUEUE_MUST_CLOSE_PRODUCER_READFD |
+			XTM_QUEUE_MUST_CLOSE_CONSUMER_READFD);
 }
 
 /* Launched in TX thread. */
@@ -4554,7 +4574,7 @@ create_xtm_queues_to_tx(unsigned *xtm_to_tx_idx_ptr,
 	unsigned xtm_to_tx_idx = *xtm_to_tx_idx_ptr;
 	for (; xtm_to_tx_idx < start_idx_plus_len; ++xtm_to_tx_idx)
 		if ((conf.thread_ctxs[xtm_to_tx_idx].queue_to_tx =
-		    xtm_create(QUEUE_TO_TX_ITEMS)) == NULL) {
+		    xtm_queue_new(QUEUE_TO_TX_ITEMS)) == NULL) {
 			lerr = "Failed to create xtm queue";
 			goto Done;
 		}

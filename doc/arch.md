@@ -51,6 +51,7 @@ notifying TX thread to cancel request processing.
 All "postprocess" functions, launched in http threads,
 check that `shuttle` has not yet been disposed and do not dereference
 `h2o_req_t` pointer in that case (and, of course, send nothing).
+
 tarantool/xtm is used to call functions in the TX thread from a http thread
 and vice versa. Two xtm queues are created for each http thread -
 one in each direction. Separate fiber is created to handle requests from
@@ -58,6 +59,16 @@ each http thread.
 (TODO: Check that using single fiber to handle all xtm queues -
 which are single-producer-single-consumer - is doable with reasonable efforts
 and actually works faster, this is just performance optimization).
+xtm queue size is limited, its overflow on HTTP(S) request causes error 5xx
+to be returned to HTTP(S) client, overflow in all other cases
+("ready to send more body", cancellation...)
+causes a fiber or HTTP(S) thread to go to sleep until it is
+notified that there is a space in the queue so "function push" operation
+can be retried
+(failure to call a function is unacceptable because it disrupts request
+handling logic and causes resource leaks -
+e. g. we shouldn't fail a request to free `shuttle`).
+
 Request processing code in TX thread creates new fiber for every request,
 creates Lua tables with request data, and launches user-configured handler.
 Such a handler can send a response and/or terminate request handling ("close").

@@ -532,6 +532,9 @@ h2o_linklist_unlink_fast(h2o_linklist_t *node)
 static inline void
 xtm_fun_invoke_all(struct xtm_queue *queue)
 {
+	/* FIXME: Maybe we should log consume error (should never happen?) */
+	(void)xtm_queue_consume(xtm_queue_consumer_fd(queue));
+
 	if (xtm_queue_invoke_funs_all(queue) != 0) {
 		/* FIXME: Implement producer notification so it can sleep
 		 * instead of polling

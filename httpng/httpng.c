@@ -2,6 +2,7 @@
 #include "process_helper.h"
 #include <fcntl.h>
 #include <float.h>
+#include <poll.h>
 
 #include <lauxlib.h>
 #include <module.h>
@@ -448,11 +449,6 @@ extern shuttle_t *prepare_shuttle2(h2o_req_t *);
 static void fill_http_headers(lua_State *L, lua_handler_state_t *state,
 	int param_lua_idx);
 
-/* Called when dispatch must not fail */
-extern void stubborn_dispatch_uni(struct xtm_queue *queue, void *func,
-	void *param);
-#define call_via_xtm(a, b, c) stubborn_dispatch_uni(a, b, c)
-
 #ifndef USE_LIBUV
 static void on_terminate_notifier_read(h2o_socket_t *sock, const char *err);
 #endif /* USE_LIBUV */
@@ -528,18 +524,36 @@ h2o_linklist_unlink_fast(h2o_linklist_t *node)
     node->prev->next = node->next;
 }
 
-/* Can be launched in TX thread or HTTP server thread. */
+/* Launched in HTTP(S) server thread. */
 static inline void
-xtm_fun_invoke_all(struct xtm_queue *queue)
+invoke_all_in_http_thr(struct xtm_queue *queue)
 {
 	/* FIXME: Maybe we should log consume error (should never happen?) */
 	(void)xtm_queue_consume(xtm_queue_consumer_fd(queue));
 
-	if (xtm_queue_invoke_funs_all(queue) != 0) {
-		/* FIXME: Implement producer notification so it can sleep
-		 * instead of polling
-		 * (XTM_QUEUE_PRODUCER_NEEDS_NOTIFICATIONS). */
-	}
+	(void)xtm_queue_invoke_funs_all(queue);
+	if (xtm_queue_get_reset_was_full(queue))
+		while (xtm_queue_notify_producer(queue) != 0) {
+			/* FIXME: Maybe we should log error
+			 * (should not happen normally)? */
+			usleep(1000);
+		}
+}
+
+/* Launched in TX thread. */
+static inline void
+invoke_all_in_tx(struct xtm_queue *queue)
+{
+	/* FIXME: Maybe we should log consume error (should never happen?) */
+	(void)xtm_queue_consume(xtm_queue_consumer_fd(queue));
+
+	(void)xtm_queue_invoke_funs_all(queue);
+	if (xtm_queue_get_reset_was_full(queue))
+		while (xtm_queue_notify_producer(queue) != 0) {
+			/* FIXME: Maybe we should log error
+			 * (should not happen normally)? */
+			fiber_sleep(0.001);
+		}
 }
 
 /* Launched in HTTP server thread. */
@@ -562,17 +576,6 @@ get_shuttle(lua_handler_state_t *state)
 {
 	return (shuttle_t *)((char *)state - offsetof(shuttle_t, payload));
 }
-
-/* Can be launched in TX thread or HTTP server thread.
- * Called when dispatch must not fail. */
-static inline void
-call_via_xtm_with_shuttle(struct xtm_queue *queue,
-	shuttle_func_t *func, shuttle_t *shuttle)
-{
-	call_via_xtm(queue, (void *)func, shuttle);
-}
-
-#define stubborn_dispatch(a, b, c) call_via_xtm_with_shuttle(a, b, c)
 
 /* Launched in TX thread.
  * FIXME: Use lua_tointegerx() when we would no longer care about
@@ -600,22 +603,6 @@ get_lua_handler_state(h2o_generator_t *generator)
 		lua_handler_state_t, un.resp.any.generator);
 }
 
-/* Launched in TX thread. */
-static inline void
-call_in_http_thr_with_shuttle(shuttle_func_t *func, shuttle_t *shuttle)
-{
-	call_via_xtm_with_shuttle(shuttle->thread_ctx->queue_from_tx,
-		func, shuttle);
-}
-
-/* Launched in HTTP(S) server thread. */
-static inline void
-call_in_tx_with_shuttle(shuttle_func_t *func, shuttle_t *shuttle)
-{
-	assert(shuttle->thread_ctx == get_curr_thread_ctx());
-	call_via_xtm_with_shuttle(get_queue_to_tx(), func, shuttle);
-}
-
 /* Can be launched in TX thread or HTTP server thread. */
 static inline void
 reliably_notify_xtm_consumer(struct xtm_queue *queue)
@@ -627,25 +614,61 @@ reliably_notify_xtm_consumer(struct xtm_queue *queue)
 	}
 }
 
-/* Can be launched in TX thread or HTTP server thread.
- * Called when dispatch must not fail. */
-void
-stubborn_dispatch_uni(struct xtm_queue *queue, void *func, void *param)
+/* Launched in HTTP(S) server thread.
+ * N. b.: xtm queue is single-producer, there should be no pushes to the same
+ * queue from TX or another HTTP(S) server thread until we are done. */
+static void
+call_from_http_thr(struct xtm_queue *queue, void *func, void *param)
 {
-	while (xtm_queue_push_fun(queue, (void (*)(void *))func, param, 0) != 0) {
-		/* Error; we must not fail so retry a little later. */
-		fiber_sleep(0);
+	while (xtm_queue_push_fun(queue, (void (*)(void *))func, param,
+	    XTM_QUEUE_PRODUCER_NEEDS_NOTIFICATIONS) != 0) {
+		const int fd = xtm_queue_producer_fd(queue);
+		struct pollfd fds[] = {
+			{
+				.fd = fd,
+				.events = POLLIN,
+				.revents = 0,
+			},
+		};
+		(void)poll(fds, 1, -1);
+		if (fds[0].revents & POLLIN)
+			/* FIXME: Maybe we should log consume error
+			 * (should never happen?) */
+			(void)xtm_queue_consume(fd);
 	}
 	reliably_notify_xtm_consumer(queue);
 }
 
-/* Can be launched in TX thread or HTTP server thread.
- * Called when dispatch must not fail. */
-static inline void
-call_via_xtm_with_lua_handler_state(struct xtm_queue *queue,
-	lua_handler_state_func_t *func, lua_handler_state_t *param)
+/* Launched in TX thread.
+ * N. b.: xtm queue is single-producer, there should be no pushes to the same
+ * queue from HTTP(S) server threads until we are done. */
+static void
+call_from_tx(struct xtm_queue *queue, void *func, void *param)
 {
-	call_via_xtm(queue, (void *)func, param);
+	while (xtm_queue_push_fun(queue, (void (*)(void *))func, param,
+	    XTM_QUEUE_PRODUCER_NEEDS_NOTIFICATIONS) != 0) {
+		const int fd = xtm_queue_producer_fd(queue);
+		if (coio_wait(fd, COIO_READ, DBL_MAX) & COIO_READ)
+			/* FIXME: Maybe we should log consume error
+			 * (should never happen?) */
+			(void)xtm_queue_consume(fd);
+	}
+	reliably_notify_xtm_consumer(queue);
+}
+
+/* Launched in HTTP(S) server thread. */
+static inline void
+call_in_tx_with_shuttle(shuttle_func_t *func, shuttle_t *shuttle)
+{
+	assert(shuttle->thread_ctx == get_curr_thread_ctx());
+	call_from_http_thr(get_queue_to_tx(), func, shuttle);
+}
+
+/* Launched in TX thread. */
+static inline void
+call_in_http_thr_with_shuttle(shuttle_func_t *func, shuttle_t *shuttle)
+{
+	call_from_tx(shuttle->thread_ctx->queue_from_tx, func, shuttle);
 }
 
 /* Launched in TX thread. */
@@ -653,10 +676,8 @@ static inline void
 call_in_http_thr_with_lua_handler_state(lua_handler_state_func_t *func,
 	lua_handler_state_t *state)
 {
-	shuttle_t *const shuttle =
-		my_container_of(state, shuttle_t, payload);
-	call_via_xtm_with_lua_handler_state(shuttle->thread_ctx->queue_from_tx,
-		func, state);
+	shuttle_t *const shuttle = my_container_of(state, shuttle_t, payload);
+	call_from_tx(shuttle->thread_ctx->queue_from_tx, func, state);
 }
 
 /* Launched in HTTP(S) server thread. */
@@ -665,16 +686,7 @@ call_in_tx_with_lua_handler_state(lua_handler_state_func_t *func,
 	lua_handler_state_t *param)
 {
 	assert(get_shuttle(param)->thread_ctx == get_curr_thread_ctx());
-	call_via_xtm_with_lua_handler_state(get_queue_to_tx(), func, param);
-}
-
-/* Can be launched in TX thread or HTTP server thread.
- * Called when dispatch must not fail. */
-static inline void
-call_via_xtm_with_recv_data(struct xtm_queue *queue, recv_data_func_t *func,
-	recv_data_t *param)
-{
-	call_via_xtm(queue, (void *)func, param);
+	call_from_http_thr(get_queue_to_tx(), func, param);
 }
 
 #ifdef SHOULD_FREE_RECV_DATA_IN_HTTP_SERVER_THREAD
@@ -682,8 +694,8 @@ call_via_xtm_with_recv_data(struct xtm_queue *queue, recv_data_func_t *func,
 static inline void
 call_in_http_thr_with_recv_data(recv_data_func_t *func, recv_data_t *recv_data)
 {
-	call_via_xtm_with_recv_data(recv_data->parent_shuttle->thread_ctx
-		->queue_from_tx, func, recv_data);
+	call_from_tx(recv_data->parent_shuttle->thread_ctx->queue_from_tx,
+		func, recv_data);
 }
 #endif /* SHOULD_FREE_RECV_DATA_IN_HTTP_SERVER_THREAD */
 
@@ -692,25 +704,23 @@ static inline void
 call_in_tx_with_recv_data(recv_data_func_t *func, recv_data_t *recv_data)
 {
 	assert(recv_data->parent_shuttle->thread_ctx == get_curr_thread_ctx());
-	call_via_xtm_with_recv_data(get_queue_to_tx(), func, recv_data);
+	call_from_http_thr(get_queue_to_tx(), func, recv_data);
 }
 
-/* Launched in HTTP server thread.
- * Called when dispatch must not fail. */
+/* Launched in HTTP server thread. */
 static inline void
 call_in_tx_with_thread_ctx(thread_ctx_func_t *func, thread_ctx_t *thread_ctx)
 {
 	assert(thread_ctx == get_curr_thread_ctx());
-	call_via_xtm(thread_ctx->queue_to_tx, (void *)func, thread_ctx);
+	call_from_http_thr(thread_ctx->queue_to_tx, func, thread_ctx);
 }
 
-/* Launched in TX thread.
- * Called when dispatch must not fail. */
+/* Launched in TX thread. */
 static inline void
 call_in_http_thr_with_thread_ctx(thread_ctx_func_t *func,
 	thread_ctx_t *thread_ctx)
 {
-	call_via_xtm(thread_ctx->queue_from_tx, (void *)func, thread_ctx);
+	call_from_tx(thread_ctx->queue_from_tx, func, thread_ctx);
 }
 
 /* Launched in HTTP server thread. */
@@ -2780,7 +2790,7 @@ on_call_from_tx(uv_poll_t *handle, int status, int events)
 	(void)events;
 	if (status != 0)
 		return;
-	xtm_fun_invoke_all(get_curr_thread_ctx()->queue_from_tx);
+	invoke_all_in_http_thr(get_curr_thread_ctx()->queue_from_tx);
 }
 
 #else /* USE_LIBUV */
@@ -2792,7 +2802,7 @@ on_call_from_tx(h2o_socket_t *listener, const char *err)
 	if (err != NULL)
 		return;
 
-	xtm_fun_invoke_all(get_curr_thread_ctx()->queue_from_tx);
+	invoke_all_in_http_thr(get_curr_thread_ctx()->queue_from_tx);
 }
 
 #endif /* USE_LIBUV */
@@ -3957,7 +3967,7 @@ tx_fiber_func(va_list ap)
 	 * queueing corresponding function call. */
 	while (!thread_ctx->tx_fiber_should_exit)
 		if (coio_wait(pipe_fd, COIO_READ, DBL_MAX) & COIO_READ)
-			xtm_fun_invoke_all(queue_to_tx);
+			invoke_all_in_tx(queue_to_tx);
 	thread_ctx->tx_fiber_finished = true;
 	if (thread_ctx->fiber_to_wake_on_shutdown != NULL) {
 		struct fiber *const fiber =
@@ -4494,7 +4504,7 @@ terminate_tx_fibers(unsigned start_idx, unsigned start_idx_plus_len)
 		 * may not be set.
 		 * Using xtm is safe because threads have finished. */
 		if (!thread_ctx->tx_fiber_should_exit)
-			call_via_xtm(thread_ctx->queue_to_tx,
+			call_from_tx(thread_ctx->queue_to_tx,
 				tell_tx_fiber_to_exit, thread_ctx);
 	}
 	for (idx = start_idx; idx < start_idx_plus_len; ++idx) {

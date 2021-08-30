@@ -1490,7 +1490,7 @@ close_websocket(lua_handler_state_t *const state)
 
 /* Launched in TX thread. */
 static inline void
-call_in_tx_close_websocket(lua_handler_state_t *state)
+call_in_http_thr_close_websocket(lua_handler_state_t *state)
 {
 	call_in_http_thr_with_lua_handler_state(close_websocket, state);
 }
@@ -1524,7 +1524,7 @@ perform_ws_close(lua_State *L)
 		return 0;
 
 	state->cancelled = true;
-	call_in_tx_close_websocket(state);
+	call_in_http_thr_close_websocket(state);
 	wait_for_lua_shuttle_return(state);
 	return 0;
 }
@@ -2133,7 +2133,7 @@ static inline void
 handle_ws_free(lua_handler_state_t *state)
 {
 	take_shuttle_ownership_lua(state);
-	call_in_tx_close_websocket(state);
+	call_in_http_thr_close_websocket(state);
 	wait_for_lua_shuttle_return(state);
 	free_lua_websocket_shuttle_from_tx(get_shuttle(state));
 }

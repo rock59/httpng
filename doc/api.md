@@ -74,7 +74,8 @@ as well as the maximal accepted size of request headers.
 When you are calling `cfg()` after successful call to `cfg()`,
 it performs reconfiguration (hot reload).
 You can replace `handler`, increase or decrease `threads`,
-change `thread_termination_timeout`.
+change `max_body_len`, `max_conn_per_thread`,
+`thread_termination_timeout`, `use_body_split`.
 You can also change the router object with corresponding functions
 and these changes would affect the running server.
 Attempts to change other parameters would throw an error.

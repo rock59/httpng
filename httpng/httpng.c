@@ -1098,7 +1098,7 @@ add_http_header_to_lua_response(lua_first_response_only_t *state,
 static void
 take_shuttle_ownership_lua(lua_handler_state_t *state)
 {
-	if (state->waiter == NULL)
+	if (state->cancelled || state->waiter == NULL)
 		return;
 
 	/* Other fiber(s) are already waiting for shuttle return or taking
@@ -1120,6 +1120,9 @@ take_shuttle_ownership_lua(lua_handler_state_t *state)
 static inline void
 wait_for_lua_shuttle_return(lua_handler_state_t *state)
 {
+	if (state->cancelled)
+		return;
+
 	/* Add us into head of waiting list. */
 	waiter_t waiter = { .next = state->waiter, .fiber = fiber_self() };
 	state->waiter = &waiter;
@@ -2178,8 +2181,10 @@ static inline void
 handle_ws_free(lua_handler_state_t *state)
 {
 	take_shuttle_ownership_lua(state);
-	call_in_http_thr_close_websocket(state);
-	wait_for_lua_shuttle_return(state);
+	if (!state->cancelled) {
+		call_in_http_thr_close_websocket(state);
+		wait_for_lua_shuttle_return(state);
+	}
 	free_lua_websocket_shuttle_from_tx(get_shuttle(state));
 }
 

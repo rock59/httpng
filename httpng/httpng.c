@@ -605,14 +605,25 @@ get_lua_handler_state(h2o_generator_t *generator)
 		lua_handler_state_t, un.resp.any.generator);
 }
 
-/* Can be launched in TX thread or HTTP server thread. */
+/* Launched in TX thread. */
 static inline void
-reliably_notify_xtm_consumer(struct xtm_queue *queue)
+reliably_notify_xtm_consumer_from_tx(struct xtm_queue *queue)
 {
 	while (xtm_queue_notify_consumer(queue) != 0) {
 		/* Actually notification should never fail, but... */
 		assert(false);
 		fiber_sleep(0.001);
+	}
+}
+
+/* Launched in HTTP server thread. */
+static inline void
+reliably_notify_xtm_consumer_from_http_thr(struct xtm_queue *queue)
+{
+	while (xtm_queue_notify_consumer(queue) != 0) {
+		/* Actually notification should never fail, but... */
+		assert(false);
+		usleep(1000);
 	}
 }
 
@@ -638,7 +649,7 @@ call_from_http_thr(struct xtm_queue *queue, void *func, void *param)
 			 * (should never happen?) */
 			(void)xtm_queue_consume(fd);
 	}
-	reliably_notify_xtm_consumer(queue);
+	reliably_notify_xtm_consumer_from_http_thr(queue);
 }
 
 /* Launched in TX thread. */
@@ -662,7 +673,7 @@ call_from_tx(struct xtm_queue *queue, void *func, void *param,
 {
 	if (xtm_queue_push_fun(queue, (void (*)(void *))func, param,
 	    XTM_QUEUE_PRODUCER_NEEDS_NOTIFICATIONS) == 0) {
-		reliably_notify_xtm_consumer(queue);
+		reliably_notify_xtm_consumer_from_tx(queue);
 		return;
 	}
 
@@ -695,7 +706,7 @@ call_from_tx(struct xtm_queue *queue, void *func, void *param,
 		}
 	} while (xtm_queue_push_fun(queue, (void (*)(void *))func, param,
 		XTM_QUEUE_PRODUCER_NEEDS_NOTIFICATIONS) != 0);
-	reliably_notify_xtm_consumer(queue);
+	reliably_notify_xtm_consumer_from_tx(queue);
 	wake_call_from_tx_waiter(thread_ctx);
 }
 
@@ -2529,7 +2540,7 @@ lua_req_handler_ex(h2o_req_t *req,
 		h2o_send_inline(req, H2O_STRLIT("Queue overflow\n"));
 		return;
 	}
-	reliably_notify_xtm_consumer(queue);
+	reliably_notify_xtm_consumer_from_http_thr(queue);
 	shuttle->anchor->user_free_shuttle = &free_shuttle_lua;
 }
 

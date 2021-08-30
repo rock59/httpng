@@ -136,6 +136,11 @@ typedef struct {
 	h2o_linklist_t accepted_list;
 } our_sock_t;
 
+typedef struct waiter {
+	struct waiter *next;
+	struct fiber *fiber;
+} waiter_t;
+
 typedef struct {
 	h2o_globalconf_t globalconf;
 	h2o_context_t ctx;
@@ -143,6 +148,7 @@ typedef struct {
 	struct xtm_queue *queue_to_tx;
 	struct xtm_queue *queue_from_tx;
 	struct fiber *fiber_to_wake_on_shutdown;
+	waiter_t *call_from_tx_waiter;
 	h2o_hostconf_t *hostconf;
 #ifndef USE_LIBUV
 	/* For xtm; it is probably not socket underneath. */
@@ -169,6 +175,7 @@ typedef struct {
 	unsigned active_lua_fibers;
 	unsigned listeners_created;
 	pthread_t tid;
+	bool push_from_tx_is_sleeping;
 	bool xtm_queues_flushed;
 	bool shutdown_req_sent; /* TX -> HTTP(S) server thread. */
 	bool shutdown_requested; /* Someone asked us to shut down thread. */
@@ -255,11 +262,6 @@ typedef struct st_sni_map {
 	size_t sni_fields_capacity;
 } sni_map_t;
 typedef sni_map_t servername_callback_arg_t;
-
-typedef struct waiter {
-	struct waiter *next;
-	struct fiber *fiber;
-} waiter_t;
 
 /* N. b.: must be relocatable when server is running
  * (do not store e. g. string buffers here).
@@ -639,21 +641,62 @@ call_from_http_thr(struct xtm_queue *queue, void *func, void *param)
 	reliably_notify_xtm_consumer(queue);
 }
 
+/* Launched in TX thread. */
+static inline void
+wake_call_from_tx_waiter(thread_ctx_t *thread_ctx)
+{
+	waiter_t *const waiter = thread_ctx->call_from_tx_waiter;
+	if (waiter == NULL)
+		return;
+
+	thread_ctx->call_from_tx_waiter = waiter->next;
+	fiber_wakeup(waiter->fiber);
+}
+
 /* Launched in TX thread.
  * N. b.: xtm queue is single-producer, there should be no pushes to the same
  * queue from HTTP(S) server threads until we are done. */
 static void
-call_from_tx(struct xtm_queue *queue, void *func, void *param)
+call_from_tx(struct xtm_queue *queue, void *func, void *param,
+	thread_ctx_t *thread_ctx)
 {
-	while (xtm_queue_push_fun(queue, (void (*)(void *))func, param,
-	    XTM_QUEUE_PRODUCER_NEEDS_NOTIFICATIONS) != 0) {
-		const int fd = xtm_queue_producer_fd(queue);
-		if (coio_wait(fd, COIO_READ, DBL_MAX) & COIO_READ)
-			/* FIXME: Maybe we should log consume error
-			 * (should never happen?) */
-			(void)xtm_queue_consume(fd);
+	if (xtm_queue_push_fun(queue, (void (*)(void *))func, param,
+	    XTM_QUEUE_PRODUCER_NEEDS_NOTIFICATIONS) == 0) {
+		reliably_notify_xtm_consumer(queue);
+		return;
 	}
+
+	do {
+		if (thread_ctx->push_from_tx_is_sleeping) {
+			waiter_t waiter =
+				{ .next = NULL, .fiber = fiber_self() };
+			waiter_t *last_waiter =
+				thread_ctx->call_from_tx_waiter;
+			if (last_waiter == NULL)
+				thread_ctx->call_from_tx_waiter = &waiter;
+			else {
+				/* FIXME: It may be more efficient to use
+				 * double-linked list if we expect a lot of
+				 * competing fibers. */
+				while (last_waiter->next != NULL)
+					last_waiter = last_waiter->next;
+				last_waiter->next = &waiter;
+			}
+			fiber_yield();
+		} else {
+			const int fd = xtm_queue_producer_fd(queue);
+			thread_ctx->push_from_tx_is_sleeping = true;
+			const int res = coio_wait(fd, COIO_READ, DBL_MAX);
+			thread_ctx->push_from_tx_is_sleeping = false;
+			if (res & COIO_READ)
+				/* FIXME: Maybe we should log consume error
+				 * (should never happen?) */
+				(void)xtm_queue_consume(fd);
+		}
+	} while (xtm_queue_push_fun(queue, (void (*)(void *))func, param,
+		XTM_QUEUE_PRODUCER_NEEDS_NOTIFICATIONS) != 0);
 	reliably_notify_xtm_consumer(queue);
+	wake_call_from_tx_waiter(thread_ctx);
 }
 
 /* Launched in HTTP(S) server thread. */
@@ -668,7 +711,8 @@ call_in_tx_with_shuttle(shuttle_func_t *func, shuttle_t *shuttle)
 static inline void
 call_in_http_thr_with_shuttle(shuttle_func_t *func, shuttle_t *shuttle)
 {
-	call_from_tx(shuttle->thread_ctx->queue_from_tx, func, shuttle);
+	call_from_tx(shuttle->thread_ctx->queue_from_tx, func, shuttle,
+		shuttle->thread_ctx);
 }
 
 /* Launched in TX thread. */
@@ -677,7 +721,8 @@ call_in_http_thr_with_lua_handler_state(lua_handler_state_func_t *func,
 	lua_handler_state_t *state)
 {
 	shuttle_t *const shuttle = my_container_of(state, shuttle_t, payload);
-	call_from_tx(shuttle->thread_ctx->queue_from_tx, func, state);
+	call_from_tx(shuttle->thread_ctx->queue_from_tx, func, state,
+		shuttle->thread_ctx);
 }
 
 /* Launched in HTTP(S) server thread. */
@@ -695,7 +740,7 @@ static inline void
 call_in_http_thr_with_recv_data(recv_data_func_t *func, recv_data_t *recv_data)
 {
 	call_from_tx(recv_data->parent_shuttle->thread_ctx->queue_from_tx,
-		func, recv_data);
+		func, recv_data, thread_ctx);
 }
 #endif /* SHOULD_FREE_RECV_DATA_IN_HTTP_SERVER_THREAD */
 
@@ -720,7 +765,7 @@ static inline void
 call_in_http_thr_with_thread_ctx(thread_ctx_func_t *func,
 	thread_ctx_t *thread_ctx)
 {
-	call_from_tx(thread_ctx->queue_from_tx, func, thread_ctx);
+	call_from_tx(thread_ctx->queue_from_tx, func, thread_ctx, thread_ctx);
 }
 
 /* Launched in HTTP server thread. */
@@ -3612,6 +3657,8 @@ reset_thread_ctx(unsigned idx)
 {
 	thread_ctx_t *const thread_ctx = &conf.thread_ctxs[idx];
 
+	thread_ctx->call_from_tx_waiter = NULL;
+	thread_ctx->push_from_tx_is_sleeping = false;
 	thread_ctx->should_notify_tx_done = false;
 	thread_ctx->tx_fiber_should_exit = false;
 	thread_ctx->shutdown_req_sent = false;
@@ -4505,7 +4552,7 @@ terminate_tx_fibers(unsigned start_idx, unsigned start_idx_plus_len)
 		 * Using xtm is safe because threads have finished. */
 		if (!thread_ctx->tx_fiber_should_exit)
 			call_from_tx(thread_ctx->queue_to_tx,
-				tell_tx_fiber_to_exit, thread_ctx);
+				tell_tx_fiber_to_exit, thread_ctx, thread_ctx);
 	}
 	for (idx = start_idx; idx < start_idx_plus_len; ++idx) {
 		thread_ctx_t *const thread_ctx = &conf.thread_ctxs[idx];

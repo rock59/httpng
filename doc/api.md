@@ -30,9 +30,10 @@ httpng module exports the following:
 
 - `handler`: HTTP(S) request handler - a function (which handles all requests)
 
-- `max_body_len`: Integer, specifies the max size in bytes of HTTP(S) request (not response!) body. Defaults to 1 MiB. Please note that the current implementation of libh2o does not work well with a large request body (too easy to DoS).
-
 - `max_conn_per_thread`: Integer, max number of HTTP(S) TCP connections per thread.
+
+- `max_shuttles_per_thread`: Integer, max number of simultaneous
+HTTP(s) requests processed by one thread (see `shuttle_size`).
 
 - `min_proto_version`: String, sets minimal accepted SSL/TLS protocol. Defaults to 'tls1.2'. Accepted values are 'ssl3', 'tls1', 'tls1.0', 'tls1.1', 'tls1.2', 'tls1.3'.
 
@@ -58,7 +59,7 @@ This is what HTTPNG is about - handling HTTP(S) requests. Handlers are Lua funct
   - `body`: String, HTTP(S) request body.
   - `headers`: Table containing HTTP(S) request headers with entries like `['user-agent'] = 'godzilla'`
   - `method`: String, 'GET', 'PUT' etc.
-  - `path`: String, contains "path" of HTTP(S) request - that is, '/en/download?a=b' for 'https://www.tarantool.io/en/download?a=b'.
+  - `path`: String, contains "path" of HTTP(S) request - that is, '/en/download' for 'https://www.tarantool.io/en/download?a=b'.
   - `query`: String, everything after "?" in path or `nil`.
   - `_shuttle`: Userdata, please do not touch.
 
@@ -68,14 +69,14 @@ finishes HTTP(S) request handling.
 You do not need that in most cases because return from handler always does that.
 `io` is a reference to self - `io:close()`.
   - `headers`: Empty table where you can create entries containing HTTP(S) response headers like `['content-type'] = 'text/html'`. It is used if you do not specify `headers` when calling `write_header()` or `write()`.
-  - `write_header(io, code, headers, body)`: function,
+  - `write_header(io, code, headers)`: function,
 sends HTTP(S) `code` (Integer),
 `headers` (optional Table with entries like
 `['content-type'] = 'text/plain; charset=utf-8'`;
-if it is not specified then `io.headers` is used) and `body` (optional String).
+if it is not specified then `io.headers` is used).
 Returns `True` if the connection has already been closed so there is no point
 in trying to send anything else. `io` is a reference to self -
-`io:write_header(code, headers, payload)`.
+`io:write_header(code, headers)`.
 `write_header()` can be called only once per HTTP(S) request.
 Note that libh2o may add some headers to handle chunked encoding etc.
   - `write(io, body)`: function, sends `body` (String).
@@ -88,7 +89,7 @@ to handle chunked encoding etc.
   - `_shuttle`: Userdata, please do not touch.
 
 `handler()` can optionally return a table with `status`, `headers` and `body`,
-the effect is the same as a call to `io:write_header(status, headers, body)`
+the effect is the same as `io:write_header(status, headers); io:write(body)`
 (if `io:write_header()` was not called; note that `io.headers` is *not* used)
 or `io:write(body)` (if `io:write_header()` was called earlier;
 `status` and `headers` are silently ignored).

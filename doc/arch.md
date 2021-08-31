@@ -120,7 +120,7 @@ libh2o 2.2.6 does not have body streaming and allocates an unlimited buffer
 to hold [decrypted] data received via a network
 (this is where `h2o_req_t->entity.base` points).
 libh2o, however, has an ability to configure maximal allowed `body` size
-which we use implicitly (and allow a user to set stricter limit).
+which we use implicitly.
 TODO: Upgrade to the latest libh2o and/or implement `body` streaming there,
 support it in httpng.
 
@@ -140,4 +140,4 @@ this may be more desireable than returning HTTP status 500
 to HTTP(S) client - but then all clients would suffer
 increased delays. This should be configurable.
 - xtm queue size is configurable.
-- maximal HTTP `body` size is configurable.
+- maximal HTTP `body` size is limited.

@@ -46,11 +46,11 @@ Defaults to 1.
 
 - `io`: Table with the following entries:
 ...
-  - `write_header(io, code, headers, body)`: function,
+  - `write_header(io, code, headers)`: function,
 ...
 Returns `nil` or `send_result` (see below).
 ...
-  - `write_header_nb(io, code, headers, body)`: function,
+  - `write_header_nb(io, code, headers)`: function,
 equivalent to `write_header()` but it never blocks
 (see `send_result` for details).
 
@@ -75,52 +75,53 @@ Defaults to `default_send_timeout`.
   - `get_send_stats(io)`: function, returns `send_stats` table
 (see below).
 
-  - `block_until_acknowledged(io, index, timeout)`: function, yield
-until `send_stats.acknowledged >= index`
-or `send_stats.cancelled` or `timeout` seconds passed.
+  - `block_until_remains(io, leftover, timeout)`: function, yield
+until `send_stats.current - send_stats.sent >= leftover`
+or `send_stats.cancelled == True` or `timeout` seconds passed.
+Returns `send_result`.
 
-  - `block_until_everything_acknowledged(io, timeout)`: function, yield
-until `send_stats.acknowledged == send_stats.current`
-or `send_stats.cancelled` or `timeout` seconds passed.
-
-  - `block_until_everything_sent(io, timeout)`: function, yield
-until `send_stats.sent == send_stats.current` or `send_stats.cancelled == True`
+  - `block_until_pos(io, pos, timeout)`: function, yield
+until `send_stats.sent >= pos` or `send_stats.cancelled == True`
 or `timeout` seconds passed.
-Please note that when this function returns there may still be part of `body`
-"in flight" from HTTP(S) server to HTTP(S) client.
-
-  - `block_until_sent(io, index, timeout)`: function, yield
-until `send_stats.sent >= index` or `send_stats.cancelled == True`
-or `timeout` seconds passed.
-Please note that when this function returns there may still be part of `body`
-"in flight" from HTTP(S) server to HTTP(S) client.
+Returns `send_result`.
 
 #### Send result
 
-`write_header()` and `write()` can return table which we call `send_result`.
-It can contain one or more of the following members:
-- `cancelled`: Boolean, set to `True` if HTTP(S) client has already cancelled
+`write*()`/`block*()` functions can return an opaque value
+which we call `send_result` (for performance reasons it could be an Integer
+but you should not make any assumptions about that).
+You can use helper functions from `require 'httpng'` table
+to decode `send_result`.
+- `cancelled(send_result)`: Returns Boolean,
+`True` if HTTP(S) client has already cancelled
 request processing by closing/resetting TCP connection (or just timing out)
 or in any other way. All further `write*()` to this request's `io` are silently
 ignored. User handler can use this information to avoid wasting server
 resources - it is recommended to free resources (if applicable) and return.
-- `timed_out`: Boolean, set to `True` if at least part of the `body`
+- `timed_out(send_result)`: Returns Boolean,
+set to `True` if at least part of the `body`
 specified in this particular call to `write*()`
-has not been acknowledged by the HTTP(S) client for `send_timeout` seconds.
+has not been sent to the HTTP(S) client for `send_timeout` seconds.
 This part of the `body` will still be delivered to HTTP(S) client later
-(unless request is cancelled [later]).
-- `would_block`: Boolean, applies only to `_nb` versions of functions.
-Set to `True` if an attempt to send data would block the caller's fiber
+(unless the request is cancelled [later]) - but please read a comment below.
+It is guaranteed to not be `True` if `cancelled(send_result)`
+to make handlers faster and simpler.
+`_nb` versions of functions never block so they can't time out.
+- `would_block(send_result)`: Returns Boolean,
+only `_nb` versions of functions can use that.
+`True` if an attempt to send data would block the caller's fiber
 (e. g. number of `body` bytes in flight plus length of `body` in this
 `write*()` call is larger than `send_window`)
 or would cause `body` data to be queued in TX
 because an earlier call has timed out.
 Nothing is sent to HTTP(S) client in this case. The caller of `_nb` versions
-of functions is expected to always handle `would_block == True`.
+of functions is expected to always handle `would_block(send_result) == True`.
+It is guaranteed to not be `True` if `cancelled(send_result)`
+to make handlers faster and simpler.
 
 Please note that `timed_out` is only set if this particular call to one of
-`write*()` functions was blocking and has timed out.
-`timed_out == False` does NOT mean that data has been acknowledged by
+`write*()`/`block*()` functions was blocking and has timed out.
+`timed_out == False` does NOT mean that data has been sent to
 the HTTP(S) client.
 You can use `get_send_stats()` to determine that
 and measure timing according to your application needs.
@@ -129,44 +130,35 @@ and measure timing according to your application needs.
 
 `get_send_stats()` returns table which we call `send_stats`.
 It contains the following members (note that indexes are 1-based):
- - `current`: Integer, index of next `body` byte which
-`write*()` functions would send.
- - `sent`: Integer, index of first `body` byte not yet sent
-to the HTTP(S) client.
- - `acknowledged`: Integer, index of first `body` byte not yet acknowledged
-by the HTTP(S) client.
- - `cancelled`: Boolean, see `send_result.cancelled`.
+ - `current`: Integer, number of `body` bytes passed to `write*()` functions.
+ - `sent`: Integer, number of `body` bytes sent to the HTTP(S) client
+(note that some of them may still be "in flight" via network).
+ - `cancelled`: Boolean, see `cancelled(send_result)` for a description.
 
 Example:
 ```
---- send_stats: current = 1, sent = 1, acknowledged = 1
+--- send_stats: current = 0, sent = 0
 
 -- Sends status, headers and 3 bytes of body
 io:write_header(200, {['content-type'] = 'text/plain'}, 'abc')
 
---- send_stats: current = 4, sent = 4, acknowledged = 1
+--- send_stats: current = 3, sent = 3
 
-io:write('12345') -- Sends another 5 bytes of body
+io:write('12345') -- Sends another 5 bytes of body but the call is blocking
+                  -- or data is not yet delivered to HTTP thread or buffered
 
---- send_stats: current = 9, sent = 9, acknowledged = 1
+--- send_stats: current = 8, sent = 3
 
-fiber.sleep(0.01)
--- HTTP(S) client has received and acknowledged part of sent data.
+--- Some time has passed, data has been sent to the HTTP(S) client
 
---- send_stats: current = 9, sent = 9, acknowledged = 4
+--- send_stats: current = 8, sent = 8
 
-fiber.sleep(1)
--- HTTP(S) client has received and acknowledged everything.
-
---- send_stats: current = 9, sent = 9, acknowledged = 9
 ```
-Please note that `sent` may be less than `current` if queueing happens in TX
-(e. g. if you are calling `write*()` after `timed_out == True`).
-Please note that transport protocols do not guarantee that data is acknowledged
-in the same chunks you send (it is allowed to acknowledge bytes one-by-one
+Please note that it is not guaranteed that `sent` is updated
+in the same chunks you send (it can be adjusted byte-by-byte
 or in any other step, including everything sent at once).
 
 You can implement any timeouts needed for your application by recording
 timestamps and `send_stats.current` before calling `write*()` and comparing it
-to `send_stats.acknowledged` whenever appropriate.
+to `send_stats.sent` whenever appropriate.
 You can use `block_*()` functions to efficiently wait for events.

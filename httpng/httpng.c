@@ -5215,6 +5215,22 @@ init_userdata(const path_desc_t *path_descs)
 	return NULL;
 }
 
+#ifdef SUPPORT_SPLITTING_LARGE_BODY
+/* Launched in TX thread. */
+static inline bool
+get_use_body_split(lua_State *L, int idx, unsigned shuttle_size,
+	uint64_t *max_body_len)
+{
+	lua_getfield(L, idx, "use_body_split");
+	const bool use_body_split =
+		is_nil_or_null(L, -1) ? false : lua_toboolean(L, -1);
+	if (!use_body_split && *max_body_len >
+	    (shuttle_size - sizeof(shuttle_t)))
+		*max_body_len = shuttle_size - sizeof(shuttle_t);
+	return use_body_split;
+}
+#endif /* SUPPORT_SPLITTING_LARGE_BODY */
+
 /* N. b.: This macro uses goto. */
 #define PROCESS_OPTIONAL_PARAM(name) \
 	lua_getfield(L, LUA_STACK_IDX_TABLE, #name); \
@@ -5240,6 +5256,17 @@ init_userdata(const path_desc_t *path_descs)
 		} \
 	}
 
+#ifdef SUPPORT_SPLITTING_LARGE_BODY
+
+#define PROCESS_MAX_BODY_LEN() PROCESS_OPTIONAL_PARAM(max_body_len)
+
+#else /* SUPPORT_SPLITTING_LARGE_BODY */
+
+#define PROCESS_MAX_BODY_LEN() \
+	const uint64_t max_body_len = shuttle_size - sizeof(shuttle_t)
+
+#endif /* SUPPORT_SPLITTING_LARGE_BODY */
+
 /* N. b.: This macro uses goto. */
 #define PROCESS_OPTIONAL_PARAMS() \
 	; \
@@ -5248,7 +5275,7 @@ init_userdata(const path_desc_t *path_descs)
 	PROCESS_OPTIONAL_PARAM(max_conn_per_thread); \
 	PROCESS_OPTIONAL_PARAM(max_shuttles_per_thread); \
 	PROCESS_OPTIONAL_PARAM(shuttle_size); \
-	PROCESS_OPTIONAL_PARAM(max_body_len); \
+	PROCESS_MAX_BODY_LEN(); \
 	/* FIXME: Maybe we need to configure tfo_queues? */
 
 /* Launched in TX thread. */
@@ -5297,9 +5324,8 @@ reconfigure(lua_State *L)
 		goto error_parameter_not_a_number;
 
 #ifdef SUPPORT_SPLITTING_LARGE_BODY
-	lua_getfield(L, LUA_STACK_IDX_TABLE, "use_body_split");
-	const bool use_body_split =
-		is_nil_or_null(L, -1) ? false : lua_toboolean(L, -1);
+	const bool use_body_split = get_use_body_split(L, LUA_STACK_IDX_TABLE,
+		shuttle_size, &max_body_len);
 #endif /* SUPPORT_SPLITTING_LARGE_BODY */
 
 	const unsigned generation = (conf.generation += GENERATION_INCREMENT);
@@ -5395,9 +5421,8 @@ cfg(lua_State *L)
 		goto error_parameter_not_a_number;
 
 #ifdef SUPPORT_SPLITTING_LARGE_BODY
-	lua_getfield(L, LUA_STACK_IDX_TABLE, "use_body_split");
-	const bool use_body_split =
-		is_nil_or_null(L, -1) ? false : lua_toboolean(L, -1);
+	const bool use_body_split = get_use_body_split(L, LUA_STACK_IDX_TABLE,
+		shuttle_size, &max_body_len);
 #endif /* SUPPORT_SPLITTING_LARGE_BODY */
 
 	save_params_to_conf(shuttle_size, threads);

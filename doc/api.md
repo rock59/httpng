@@ -53,6 +53,9 @@ etc).
 
 - `max_conn_per_thread`: Integer, max number of HTTP(S) TCP connections per thread.
 
+- `max_shuttles_per_thread`: Integer, max number of simultaneous
+HTTP(s) requests processed by one thread (see `shuttle_size`).
+
 - `min_proto_version`: String, sets minimal accepted SSL/TLS protocol. Defaults to 'tls1.2'. Accepted values are 'ssl3', 'tls1', 'tls1.0', 'tls1.1', 'tls1.2', 'tls1.3'.
 
 - `openssl_security_level`: Integer, defaults to 1. Please see OpenSSL 1.1* documentation for details.

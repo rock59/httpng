@@ -997,9 +997,9 @@ local query_handler = function(req, io)
     end
     local payload
     if req.query == 'id=2' then
-        payload = 'good'
+        payload = req.path .. '+' .. 'good'
     else
-        payload = 'bad'
+        payload = req.path .. '+' .. 'bad'
     end
     return {body = payload}
 end
@@ -1022,7 +1022,7 @@ local test_some_query = function(ver, use_tls, query, expected)
 end
 
 local test_expected_query = function(ver, use_tls)
-    test_some_query(ver, use_tls, '?id=2', 'good')
+    test_some_query(ver, use_tls, '/prefix?id=2', '/prefix+good')
 end
 
 g_good_handlers.test_expected_query_http1_insecure = function()
@@ -1044,7 +1044,7 @@ g_good_handlers.test_expected_query_http2_tls = function()
 end
 
 local test_unexpected_query = function(ver, use_tls)
-    test_some_query(ver, use_tls, '?id=3', 'bad')
+    test_some_query(ver, use_tls, '/test?id=3', '/test+bad')
 end
 
 g_good_handlers.test_unexpected_query_http1_insecure = function()
@@ -1066,7 +1066,7 @@ g_good_handlers.test_unexpected_query_http2_tls = function()
 end
 
 local test_no_query = function(ver, use_tls)
-    test_some_query(ver, use_tls, '', 'bad')
+    test_some_query(ver, use_tls, '', '/+bad')
 end
 
 g_good_handlers.test_no_query_http1_insecure = function()

@@ -2019,6 +2019,17 @@ process_handler_success_not_ws_with_send(lua_State *L, shuttle_t *shuttle)
 
 /* Launched in TX thread. */
 static inline void
+push_path(lua_State *L, lua_handler_state_t *state)
+{
+	const size_t len = (state->un.req.query_at == LUA_QUERY_NONE) ?
+		state->un.req.path_len : state->un.req.query_at;
+	lua_pushlstring(L,
+		&state->un.req.buffer[state->un.req.router_data_len], len);
+	lua_setfield(L, -2, "path");
+}
+
+/* Launched in TX thread. */
+static inline void
 push_query(lua_State *L, lua_handler_state_t *state)
 {
 	if (state->un.req.query_at == LUA_QUERY_NONE)
@@ -2221,10 +2232,7 @@ lua_fiber_func(va_list ap)
 	lua_setfield(L, -2, "version_major");
 	lua_pushinteger(L, state->un.req.version_minor);
 	lua_setfield(L, -2, "version_minor");
-	lua_pushlstring(L, &state->un.req.buffer[
-				state->un.req.router_data_len],
-			state->un.req.path_len);
-	lua_setfield(L, -2, "path");
+	push_path(L, state);
 	lua_pushlstring(L, &state->un.req.buffer[
 		state->un.req.router_data_len +
 		state->un.req.path_len], state->un.req.authority_len);

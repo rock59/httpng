@@ -159,10 +159,8 @@ local function handle(unused, req, io)
     req._stashes = {}
     local stashes = req._stashes
     local query = req.query
-    local query_cut_len = (query == nil) and -1 or -(#query + 2)
-    local path = req.path:sub(1, query_cut_len)
     for _, v in ipairs(routes) do
-        if check_match(stashes, path, v) then
+        if check_match(stashes, req.path, v) then
             return v.handler(req, io)
         end
     end

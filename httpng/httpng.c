@@ -2599,7 +2599,7 @@ register_router_part_one(lua_site_t *lua_site,
 	register_lua_handler_part_one(lua_site, ref);
 }
 
-/* Can be launched in TX thread or HTTP server thread. */
+/* Launched in TX thread. */
 static h2o_pathconf_t *
 register_complex_handler_part_two(h2o_hostconf_t *hostconf,
 	lua_site_t *lua_site, unsigned thread_idx,
@@ -2607,6 +2607,8 @@ register_complex_handler_part_two(h2o_hostconf_t *hostconf,
 	void *c_handler_param, int router_ref)
 {
 	/* These functions never return NULL, dying instead */
+	/* FIXME: It is probably unsafe to call these functions
+	 * not from corresponding HTTP(S) thread. */
 	h2o_pathconf_t *pathconf =
 		h2o_config_register_path(hostconf, "/", 0);
 	lua_h2o_handler_t *handler = (lua_h2o_handler_t *)
@@ -2620,7 +2622,7 @@ register_complex_handler_part_two(h2o_hostconf_t *hostconf,
 	return pathconf;
 }
 
-/* Can be launched in TX thread or HTTP server thread. */
+/* Launched in TX thread. */
 static h2o_pathconf_t *
 register_lua_handler_part_two(h2o_hostconf_t *hostconf,
 	lua_site_t *lua_site, unsigned thread_idx)

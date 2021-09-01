@@ -269,7 +269,6 @@ typedef sni_map_t servername_callback_arg_t;
 typedef struct {
 	lua_h2o_handler_t *(lua_handlers[MAX_threads]);
 	int lua_handler_ref;
-	int router_lua_function_ref; /* FIXME: Refactor ref names? */
 	int old_lua_handler_ref;
 	int new_lua_handler_ref;
 	unsigned generation;
@@ -2680,7 +2679,6 @@ register_lua_router(lua_State *L, lua_site_t *lua_site,
 		*lerr = "there is no valid __call metamethod in router table";
 		return 1;
 	}
-	lua_site->router_lua_function_ref = luaL_ref(L, LUA_REGISTRYINDEX);
 	conf.fill_router_data = NULL;
 
 	register_router_part_one(lua_site, ref);

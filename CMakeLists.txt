@@ -102,8 +102,10 @@ set (HTTPNG_C_SRC
 set(HTTPNG_SRC ${HTTPNG_C_SRC} ${HEADERS})
 
 build_module(httpng_c "${HTTPNG_SRC}")
-build_module(router "httpng/router.c")
-set_target_properties(router PROPERTIES OUTPUT_NAME ${CMAKE_CURRENT_BINARY_DIR}/httpng/router_c)
+if (BUILD_C_ROUTER)
+    build_module(router "httpng/router.c")
+    set_target_properties(router PROPERTIES OUTPUT_NAME ${CMAKE_CURRENT_BINARY_DIR}/httpng/router_c)
+endif (BUILD_C_ROUTER)
 
 set(LIBS wslay xtm)
 
@@ -132,7 +134,9 @@ if (DISABLE_HTTP2)
     target_compile_definitions(httpng_c PRIVATE "DISABLE_HTTP2")
 endif(DISABLE_HTTP2)
 
-target_link_libraries(router httpng_c)
+if (BUILD_C_ROUTER)
+    target_link_libraries(router httpng_c)
+endif (BUILD_C_ROUTER)
 
 if (NOT(ENABLE_ASAN))
     # Just test
@@ -143,7 +147,9 @@ endif (NOT(ENABLE_ASAN))
 
 # Install library
 install(TARGETS httpng_c LIBRARY DESTINATION ${TARANTOOL_INSTALL_LIBDIR})
-install(TARGETS router LIBRARY DESTINATION ${TARANTOOL_INSTALL_LIBDIR}/httpng)
+if (BUILD_C_ROUTER)
+    install(TARGETS router LIBRARY DESTINATION ${TARANTOOL_INSTALL_LIBDIR}/httpng)
+endif (BUILD_C_ROUTER)
 install(FILES httpng.lua DESTINATION ${TARANTOOL_INSTALL_LUADIR})
 
 add_executable(process_helper httpng/process_helper.c)

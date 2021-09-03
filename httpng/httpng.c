@@ -1,4 +1,18 @@
-#include "router.h"
+#ifdef USE_LIBUV
+#define H2O_USE_LIBUV 1
+#else
+#define H2O_USE_EPOLL 1 /* FIXME */
+#include <h2o/evloop_socket.h>
+#endif /* USE_LIBUV */
+#include <h2o.h>
+
+struct lua_State;
+typedef void (fill_router_data_t)(struct lua_State *L, const char *path,
+	unsigned data_len, void *data);
+#define ROUTER_C_HANDLER_FIELD_NAME "_handle_request"
+#define ROUTER_C_HANDLER_PARAM_FIELD_NAME "_handle_request_param"
+#define ROUTER_FILL_ROUTER_DATA_FIELD_NAME "_fill_router_data"
+
 #include "process_helper.h"
 #include <fcntl.h>
 #include <float.h>
@@ -142,6 +156,10 @@ typedef struct waiter {
 } waiter_t;
 
 typedef struct {
+	h2o_handler_t super;
+} lua_h2o_handler_t;
+
+typedef struct {
 	h2o_globalconf_t globalconf;
 	h2o_context_t ctx;
 	struct listener_ctx *listener_ctxs;
@@ -263,17 +281,6 @@ typedef struct st_sni_map {
 } sni_map_t;
 typedef sni_map_t servername_callback_arg_t;
 
-/* N. b.: must be relocatable when server is running
- * (do not store e. g. string buffers here).
- * It is better to not touch it from handlers at all. */
-typedef struct {
-	lua_h2o_handler_t *(lua_handlers[MAX_threads]);
-	int lua_handler_ref;
-	int old_lua_handler_ref;
-	int new_lua_handler_ref;
-	unsigned generation;
-} lua_site_t;
-
 typedef struct {
 	shuttle_t *parent_shuttle;
 	unsigned payload_bytes;
@@ -306,6 +313,9 @@ typedef struct {
 	lua_first_response_only_t first; /* Must be last member of struct. */
 } lua_response_struct_t;
 
+/* FIXME: Make it ushort and add sanity checks. */
+typedef unsigned header_offset_t;
+
 typedef struct {
 	header_offset_t name_size;
 	header_offset_t value_size;
@@ -316,7 +326,6 @@ typedef struct {
 	size_t offset_within_body; /* For use by HTTP server thread. */
 #endif /* SUPPORT_SPLITTING_LARGE_BODY */
 	int lua_handler_ref; /* Reference to user Lua handler. */
-	int router_ref; /* Reference to router Lua table (not for C!) */
 	unsigned router_data_len;
 	unsigned path_len;
 	unsigned authority_len;
@@ -379,7 +388,7 @@ static struct {
 	struct fiber *reaper_fiber;
 	struct fiber *fiber_to_wake_by_reaper_fiber;
 	struct fiber *fiber_to_wake_on_reaping_done;
-	lua_site_t *lua_sites;
+	lua_h2o_handler_t *lua_handler;
 	sni_map_t **sni_maps;
 	fill_router_data_t *fill_router_data;
 	double thread_termination_timeout;
@@ -387,7 +396,6 @@ static struct {
 	uint64_t openssl_security_level;
 	long min_tls_proto_version;
 	shuttle_count_t max_shuttles_per_thread;
-	unsigned lua_site_count;
 	unsigned shuttle_size;
 	unsigned recv_data_size;
 	unsigned num_listeners;
@@ -400,7 +408,9 @@ static struct {
 	unsigned max_headers_lua;
 	unsigned max_path_len_lua;
 	unsigned max_recv_bytes_lua_websocket;
-	unsigned generation;
+	int lua_handler_ref;
+	int new_lua_handler_ref;
+	int router_ref;
 	int tfo_queues;
 	int on_shutdown_ref;
 	unsigned char reaping_flags;
@@ -443,6 +453,12 @@ static const char msg_cant_switch_ssl_ctx[] =
 
 /* FIXME: Rename after changing sample C handlers. */
 extern void free_shuttle(shuttle_t *);
+
+/* Must be called in HTTP server thread.
+ * Should only be called if disposed==false.
+ * Expected usage: when req handler can't or wouldn't queue request
+ * to TX thread. */
+extern void free_shuttle_with_anchor(struct shuttle *);
 
 /* FIXME: Maybe rename after changing sample C handlers? */
 extern shuttle_t *prepare_shuttle2(h2o_req_t *);
@@ -2221,7 +2237,7 @@ lua_fiber_func(va_list ap)
 	thread_ctx_t *const thread_ctx = shuttle->thread_ctx;
 
 	/* User handler function, written in Lua. */
-	lua_rawgeti(L, LUA_REGISTRYINDEX, state->un.req.lua_handler_ref);
+	lua_rawgeti(L, LUA_REGISTRYINDEX, conf.lua_handler_ref);
 
 	/* First param for Lua handler - req. */
 	lua_createtable(L, 0, 15);
@@ -2251,8 +2267,8 @@ lua_fiber_func(va_list ap)
 		lua_pushboolean(L, true);
 		lua_setfield(L, -2, "https");
 	}
-	if (state->un.req.router_ref != LUA_REFNIL) {
-		lua_rawgeti(L, LUA_REGISTRYINDEX, state->un.req.router_ref);
+	if (conf.router_ref != LUA_REFNIL) {
+		lua_rawgeti(L, LUA_REGISTRYINDEX, conf.router_ref);
 		lua_setfield(L, -2, "_used_router");
 	}
 
@@ -2382,8 +2398,7 @@ prepare_authority(h2o_req_t *req)
 /* Launched in HTTP server thread. */
 void
 lua_req_handler_ex(h2o_req_t *req,
-	shuttle_t *shuttle, int lua_handler_ref,
-	unsigned router_data_len, int router_ref)
+	shuttle_t *shuttle, unsigned router_data_len)
 {
 	lua_handler_state_t *const state =
 		(lua_handler_state_t *)&shuttle->payload;
@@ -2525,8 +2540,6 @@ lua_req_handler_ex(h2o_req_t *req,
 	state->cancelled = false;
 	state->upgraded_to_websocket = false;
 	state->waiter = NULL;
-	state->un.req.lua_handler_ref = lua_handler_ref;
-	state->un.req.router_ref = router_ref;
 
 	socklen_t socklen = req->conn->callbacks->get_peername(req->conn,
 		(struct sockaddr *)&state->peer);
@@ -2557,16 +2570,15 @@ lua_req_handler(lua_h2o_handler_t *self, h2o_req_t *req)
 {
 	shuttle_t *const shuttle = prepare_shuttle2(req);
 	if (shuttle != NULL)
-		lua_req_handler_ex(req, shuttle, self->lua_handler_ref,
-			0, LUA_REFNIL);
+		lua_req_handler_ex(req, shuttle, 0);
 	return 0;
 }
 
 /* Launched in TX thread. */
 static inline bool
-is_router_used(lua_site_t *lua_site)
+is_router_used(void)
 {
-	return lua_site->lua_handlers[0]->super.on_req !=
+	return conf.lua_handler->super.on_req !=
 		(int (*)(h2o_handler_t *, h2o_req_t *))lua_req_handler;
 }
 
@@ -2584,25 +2596,8 @@ register_handler(h2o_hostconf_t *hostconf,
 }
 
 /* Launched in TX thread. */
-static void
-register_lua_handler_part_one(lua_site_t *lua_site,
-	int lua_handler_ref)
-{
-	lua_site->lua_handler_ref = lua_handler_ref;
-}
-
-/* Launched in TX thread. */
-static inline void
-register_router_part_one(lua_site_t *lua_site,
-	int ref)
-{
-	register_lua_handler_part_one(lua_site, ref);
-}
-
-/* Launched in TX thread. */
 static h2o_pathconf_t *
 register_complex_handler_part_two(h2o_hostconf_t *hostconf,
-	lua_site_t *lua_site, unsigned thread_idx,
 	lua_handler_func_t *c_handler,
 	void *c_handler_param, int router_ref)
 {
@@ -2615,43 +2610,38 @@ register_complex_handler_part_two(h2o_hostconf_t *hostconf,
 		h2o_create_handler(pathconf, sizeof(*handler));
 	handler->super.on_req =
 		(int (*)(h2o_handler_t *, h2o_req_t *))c_handler;
-	handler->lua_handler_ref = lua_site->lua_handler_ref;
-	handler->c_handler_param = c_handler_param;
-	handler->router_ref = router_ref;
-	lua_site->lua_handlers[thread_idx] = handler;
+	conf.router_ref = router_ref;
+	conf.lua_handler = handler;
 	return pathconf;
 }
 
 /* Launched in TX thread. */
 static h2o_pathconf_t *
-register_lua_handler_part_two(h2o_hostconf_t *hostconf,
-	lua_site_t *lua_site, unsigned thread_idx)
+register_lua_handler_part_two(h2o_hostconf_t *hostconf)
 {
-	return register_complex_handler_part_two(hostconf, lua_site,
-		thread_idx, lua_req_handler, NULL, LUA_REFNIL);
+	return register_complex_handler_part_two(hostconf, lua_req_handler,
+		NULL, LUA_REFNIL);
 }
 
 /* Launched in TX thread. */
 static h2o_pathconf_t *
 register_router_part_two(h2o_hostconf_t *hostconf,
-	lua_site_t *lua_site, unsigned thread_idx,
 	lua_handler_func_t *handler,
 	void *handler_param, int router_ref)
 {
-	return register_complex_handler_part_two(hostconf, lua_site,
-		thread_idx, handler, handler_param, router_ref);
+	return register_complex_handler_part_two(hostconf, handler,
+		handler_param, router_ref);
 }
 
 /* Launched in TX thread. */
 static void
-register_lua_handler(lua_site_t *lua_site,
-	int lua_handler_ref)
+register_lua_handler(int lua_handler_ref)
 {
-	register_lua_handler_part_one(lua_site, lua_handler_ref);
+	conf.lua_handler_ref = lua_handler_ref;
 	unsigned thread_idx;
 	for (thread_idx = 0; thread_idx < MAX_threads; ++thread_idx)
 		register_lua_handler_part_two(conf.thread_ctxs[thread_idx]
-			.hostconf, lua_site, thread_idx);
+			.hostconf);
 }
 
 /* Launched in HTTP server thread. */
@@ -2660,16 +2650,14 @@ router_wrapper(lua_h2o_handler_t *self, h2o_req_t *req)
 {
 	shuttle_t *const shuttle = prepare_shuttle2(req);
 	if (shuttle != NULL)
-		lua_req_handler_ex(req, shuttle, self->lua_handler_ref, 0,
-			self->router_ref);
+		lua_req_handler_ex(req, shuttle, 0);
 	return 0;
 }
 
 /* Launched in TX thread.
  * Returns !0 on error. */
 static int
-register_lua_router(lua_State *L, lua_site_t *lua_site,
-	int ref, const char **lerr)
+register_lua_router(lua_State *L, int router_ref, const char **lerr)
 {
 	lua_getmetatable(L, -2);
 	if (lua_isnil(L, -1)) {
@@ -2683,27 +2671,24 @@ register_lua_router(lua_State *L, lua_site_t *lua_site,
 	}
 	conf.fill_router_data = NULL;
 
-	register_router_part_one(lua_site, ref);
+	conf.lua_handler_ref = luaL_ref(L, LUA_REGISTRYINDEX);
 	unsigned thread_idx;
 	for (thread_idx = 0; thread_idx < MAX_threads; ++thread_idx)
-		register_router_part_two(conf.thread_ctxs[thread_idx]
-			.hostconf, lua_site, thread_idx,
-			(lua_handler_func_t *)router_wrapper,
-			NULL, ref);
+		register_router_part_two(conf.thread_ctxs[thread_idx].hostconf,
+			router_wrapper, NULL, router_ref);
 	return 0;
 }
 
 /* Launched in TX thread.
  * Returns !0 on error. */
 static int
-register_router(lua_State *L, lua_site_t *lua_site,
-	int ref, const char **lerr)
+register_router(lua_State *L, int router_ref, const char **lerr)
 {
-	lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+	lua_rawgeti(L, LUA_REGISTRYINDEX, router_ref);
 
 	lua_getfield(L, -1, ROUTER_FILL_ROUTER_DATA_FIELD_NAME);
 	if (lua_isnil(L, -1))
-		return register_lua_router(L, lua_site, ref, lerr);
+		return register_lua_router(L, router_ref, lerr);
 	if (!lua_islightuserdata(L, -1)) {
 		*lerr = "router." ROUTER_FILL_ROUTER_DATA_FIELD_NAME
 			" is not userdata";
@@ -2732,11 +2717,10 @@ register_router(lua_State *L, lua_site_t *lua_site,
 	void *const user_handler_param = lua_touserdata(L, -1);
 	lua_pop(L, 4);
 
-	register_router_part_one(lua_site, ref);
 	unsigned thread_idx;
 	for (thread_idx = 0; thread_idx < MAX_threads; ++thread_idx)
 		register_router_part_two(conf.thread_ctxs[thread_idx]
-			.hostconf, lua_site, thread_idx, user_handler,
+			.hostconf, user_handler,
 			user_handler_param, LUA_REFNIL);
 	return 0;
 }
@@ -4403,7 +4387,6 @@ on_shutdown_internal(lua_State *L, bool called_from_callback)
 #endif /* USE_SHUTTLES_MUTEX */
 	}
 	deinit_listener_cfgs();
-	unsigned idx;
 #ifdef USE_LIBUV
 	for (idx = 0; idx < conf.num_listeners; ++idx) {
 		close(conf.listener_cfgs[idx].fd);
@@ -4415,11 +4398,7 @@ on_shutdown_internal(lua_State *L, bool called_from_callback)
 	conf_sni_map_cleanup();
 	dispose_h2o_configs();
 	free(conf.thread_ctxs);
-	for (idx = 0; idx < conf.lua_site_count; ++idx) {
-		const lua_site_t *const site = &conf.lua_sites[idx];
-		luaL_unref(L, LUA_REGISTRYINDEX, site->lua_handler_ref);
-	}
-	free(conf.lua_sites);
+	luaL_unref(L, LUA_REGISTRYINDEX, conf.lua_handler_ref);
 	conf.configured = false;
 	conf.fill_router_data = NULL;
 	complain_loudly_about_leaked_fds();
@@ -4443,75 +4422,10 @@ on_shutdown_for_user(lua_State *L)
 
 /* Launched in TX thread. */
 static void
-finish_flush_in_tx(thread_ctx_t *thread_ctx)
-{
-	thread_ctx->xtm_queues_flushed = true;
-}
-
-/* Launched in HTTP server thread. */
-static void
-finish_flush_in_http_thr(thread_ctx_t *thread_ctx)
-{
-	call_in_tx_with_thread_ctx(finish_flush_in_tx, thread_ctx);
-}
-
-/* Launched in TX thread. */
-static void
-replace_lua_handler_ref(lua_site_t *site)
-{
-	assert(site->lua_handler_ref != site->new_lua_handler_ref);
-	site->old_lua_handler_ref = site->lua_handler_ref;
-	site->lua_handler_ref = site->new_lua_handler_ref;
-
-	unsigned thread_idx;
-	for (thread_idx = 0; thread_idx < MAX_threads; ++thread_idx)
-		site->lua_handlers[thread_idx]->lua_handler_ref =
-			site->new_lua_handler_ref;
-}
-
-/* Launched in TX thread. */
-static void
-flush_xtm_queues(void)
-{
-	assert(conf.configured);
-	__sync_synchronize();
-	/* Now we should call useless function in HTTP thread
-	 * which would call useless function in TX thread to ensure
-	 * that no one would use "old" lua_handler_ref. */
-	unsigned thr_idx;
-	for (thr_idx = 0; thr_idx < conf.num_threads; ++thr_idx) {
-		thread_ctx_t *const thread_ctx =  &conf.thread_ctxs[thr_idx];
-		thread_ctx->xtm_queues_flushed = false;
-		call_in_http_thr_with_thread_ctx(finish_flush_in_http_thr,
-			thread_ctx);
-	}
-	for (thr_idx = 0; thr_idx < conf.num_threads; ++thr_idx) {
-		thread_ctx_t *const thread_ctx =  &conf.thread_ctxs[thr_idx];
-
-		while (!thread_ctx->xtm_queues_flushed)
-			fiber_sleep(0.001);
-	}
-}
-
-/* Launched in TX thread. */
-static void
 replace_lua_handlers(lua_State *L)
 {
-	unsigned idx;
-	for (idx = 0; idx < conf.lua_site_count; ++idx) {
-		lua_site_t *const site = &conf.lua_sites[idx];
-		if (site->generation == conf.generation)
-			replace_lua_handler_ref(site);
-	}
-
-	flush_xtm_queues();
-
-	for (idx = 0; idx < conf.lua_site_count; ++idx) {
-		lua_site_t *const site = &conf.lua_sites[idx];
-		if (site->generation == conf.generation)
-			luaL_unref(L, LUA_REGISTRYINDEX,
-				site->old_lua_handler_ref);
-	}
+	luaL_unref(L, LUA_REGISTRYINDEX, conf.lua_handler_ref);
+	conf.lua_handler_ref = conf.new_lua_handler_ref;
 }
 
 /* Launched in TX thread. */
@@ -4941,7 +4855,7 @@ get_openssl_security_level(lua_State *L, int idx, bool is_reconfig)
 
 /* Launched in TX thread. */
 static const char *
-get_handler_reconfig(lua_State *L, int idx, unsigned generation)
+get_handler_reconfig(lua_State *L, int idx, bool *handler_replaced)
 {
 	lua_getfield(L, idx, "handler");
 	if (lua_isnil(L, -1))
@@ -4950,24 +4864,20 @@ get_handler_reconfig(lua_State *L, int idx, unsigned generation)
 	    lua_type(L, -1) != LUA_TTABLE)
 		return "handler is not a function or table (router object)";
 
-	lua_site_t *const lua_site = &conf.lua_sites[0];
-	assert(lua_site->generation != generation);
-
-	if (is_router_used(lua_site))
+	if (is_router_used())
 		return (lua_type(L, -1) == LUA_TFUNCTION) ?
 			"Replacing router with handler is not supported yet" :
 			"Replacing router is not supported yet";
 	if (lua_type(L, -1) != LUA_TFUNCTION)
 		return "Replacing handler with router is not supported yet";
-	lua_site->new_lua_handler_ref = luaL_ref(L, LUA_REGISTRYINDEX);
-	lua_site->generation = generation;
+	conf.new_lua_handler_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+	*handler_replaced = true;
 	return NULL;
 }
 
 /* Launched in TX thread. */
 static const char *
-get_handler_not_reconfig(lua_State *L, int idx, unsigned generation,
-	lua_site_t **lua_sites_ptr, unsigned *lua_site_count_ptr)
+get_handler_not_reconfig(lua_State *L, int idx, unsigned *lua_site_count_ptr)
 {
 	lua_getfield(L, idx, "handler");
 	if (lua_isnil(L, -1))
@@ -4976,21 +4886,12 @@ get_handler_not_reconfig(lua_State *L, int idx, unsigned generation,
 	    lua_type(L, -1) != LUA_TTABLE)
 		return "handler is not a function or table (router object)";
 
-	lua_site_t *const new_lua_sites =
-		(lua_site_t *)malloc(sizeof(lua_site_t));
-	if (new_lua_sites == NULL)
-		return "Failed to allocate memory for Lua sites C array";
-	*lua_sites_ptr = new_lua_sites;
-	lua_site_t *const lua_site = &new_lua_sites[0];
-	lua_site->lua_handler_ref = LUA_REFNIL;
-	lua_site->generation = generation;
 	*lua_site_count_ptr = 1;
 	if (lua_type(L, -1) == LUA_TFUNCTION)
-		register_lua_handler(lua_site,
-			luaL_ref(L, LUA_REGISTRYINDEX));
+		register_lua_handler(luaL_ref(L, LUA_REGISTRYINDEX));
 	else {
 		const char *lerr;
-		if (register_router(L, lua_site,
+		if (register_router(L,
 		    luaL_ref(L, LUA_REGISTRYINDEX), &lerr) != 0)
 			return lerr;
 	}
@@ -5102,16 +5003,15 @@ register_hosts(void)
 
 /* Launched in TX thread. */
 static const char *
-configure_handler_security_listen(lua_State *L, int idx, unsigned generation,
-	lua_site_t **lua_sites, unsigned *lua_site_count_ptr,
-	unsigned c_handlers_count)
+configure_handler_security_listen(lua_State *L, int idx,
+	unsigned *lua_site_count_ptr, unsigned c_handlers_count)
 {
 	const char *lerr;
 	unsigned lua_site_count = 0;
 
 	assert(*lua_site_count_ptr == 0);
 	if ((lerr = get_handler_not_reconfig(L, idx,
-	    generation, lua_sites, &lua_site_count)) != NULL)
+	    &lua_site_count)) != NULL)
 		return lerr;
 
 	*lua_site_count_ptr = lua_site_count;
@@ -5137,10 +5037,10 @@ configure_handler_security_listen(lua_State *L, int idx, unsigned generation,
 /* Launched in TX thread. */
 static const char *
 reconfig_handler_security_listen_threads(lua_State *L, int idx,
-	unsigned generation, unsigned threads)
+	unsigned threads, bool *handler_replaced)
 {
 	const char *lerr;
-	if ((lerr = get_handler_reconfig(L, idx, generation)) != NULL)
+	if ((lerr = get_handler_reconfig(L, idx, handler_replaced)) != NULL)
 		return lerr;
 
 	if ((lerr = get_min_proto_version(L, idx, true)) != NULL)
@@ -5164,28 +5064,22 @@ reconfig_handler_security_listen_threads(lua_State *L, int idx,
 
 /* Launched in TX thread. */
 static void
-unref_on_reconfig_failure(lua_State *L, unsigned generation)
+unref_on_reconfig_failure(lua_State *L, bool handler_replaced)
 {
-	unsigned idx;
-	for (idx = 0; idx < conf.lua_site_count; ++idx) {
-		lua_site_t *const lua_site = &conf.lua_sites[idx];
-		if (lua_site->generation == generation)
-			luaL_unref(L, LUA_REGISTRYINDEX,
-				lua_site->new_lua_handler_ref);
-		else
-			lua_site->generation = generation;
-	}
+	if (!handler_replaced)
+		return;
+	luaL_unref(L, LUA_REGISTRYINDEX, conf.new_lua_handler_ref);
 }
 
 /* Launched in TX thread. */
 static void
-unref_on_config_failure(lua_State *L, const lua_site_t *lua_sites,
+unref_on_config_failure(lua_State *L,
 	unsigned lua_site_count)
 {
 	unsigned idx;
 	for (idx = 0; idx < lua_site_count; ++idx)
 		luaL_unref(L, LUA_REGISTRYINDEX,
-			lua_sites[idx].lua_handler_ref);
+			conf.lua_handler_ref);
 }
 
 /* Launched in TX thread. */
@@ -5298,10 +5192,6 @@ reconfigure(lua_State *L)
 		fiber_sleep(0.001);
 	if ((lerr = reap_gracefully_terminating_threads()) != NULL)
 		goto error_something;
-	if (conf.lua_site_count < 1) {
-		lerr = "Reconfigure w/o router or Lua handler is not supported";
-		goto error_something;
-	}
 	conf.hot_reload_in_progress = true;
 
 	lua_getfield(L, LUA_STACK_IDX_TABLE, "c_sites_func");
@@ -5328,10 +5218,9 @@ reconfigure(lua_State *L)
 		shuttle_size, &max_body_len);
 #endif /* SUPPORT_SPLITTING_LARGE_BODY */
 
-	const unsigned generation = (conf.generation += GENERATION_INCREMENT);
-
+	bool handler_replaced = false;
 	if ((lerr = reconfig_handler_security_listen_threads(L,
-	    LUA_STACK_IDX_TABLE, generation, threads)) != NULL)
+	    LUA_STACK_IDX_TABLE, threads, &handler_replaced)) != NULL)
 		goto invalid_handler;
 
 	apply_new_config(max_body_len, max_conn_per_thread,
@@ -5341,7 +5230,8 @@ reconfigure(lua_State *L)
 #endif /* SUPPORT_SPLITTING_LARGE_BODY */
 		);
 
-	replace_lua_handlers(L);
+	if (handler_replaced)
+	       replace_lua_handlers(L);
 	hot_reload_remove_threads(threads);
 
 	conf.hot_reload_in_progress = false;
@@ -5349,7 +5239,7 @@ reconfigure(lua_State *L)
 	return 0;
 
 invalid_handler:
-	unref_on_reconfig_failure(L, generation);
+	unref_on_reconfig_failure(L, handler_replaced);
 error_hot_reload_shuttle_size:
 error_parameter_not_a_number:
 error_hot_reload_c:
@@ -5443,12 +5333,10 @@ cfg(lua_State *L)
 	    NULL)
 		goto c_desc_empty;
 
-	lua_site_t *lua_sites = NULL;
 	unsigned lua_site_count = 0;
-	const unsigned generation = (conf.generation += GENERATION_INCREMENT);
 
 	if ((lerr = configure_handler_security_listen(L, LUA_STACK_IDX_TABLE,
-	    generation, &lua_sites, &lua_site_count, c_handlers_count)) != NULL)
+	    &lua_site_count, c_handlers_count)) != NULL)
 		goto invalid_handler;
 
 #if 0
@@ -5491,8 +5379,6 @@ cfg(lua_State *L)
 	    NULL)
 		goto threads_launch_fail;
 
-	conf.lua_sites = lua_sites;
-	conf.lua_site_count = lua_site_count;
 	if (!conf.is_on_shutdown_setup)
 		setup_on_shutdown(L, true, false);
 	conf.configured = true;
@@ -5514,8 +5400,7 @@ xtm_to_tx_fail:
 	deinit_listener_cfgs();
 	conf_sni_map_cleanup();
 invalid_handler:
-	unref_on_config_failure(L, lua_sites, lua_site_count);
-	free(lua_sites);
+	unref_on_config_failure(L, lua_site_count);
 c_desc_empty:
 register_host_failed:
 	/* N.b.: h2o currently can't "unregister" host(s). */
@@ -5695,15 +5580,6 @@ error_pid_not_str:
 error_no_parameters:
 	assert(lerr != NULL);
 	return luaL_error(L, lerr);
-}
-
-/* Launched in TX thread. */
-void
-httpng_flush_requests_to_router(void)
-{
-	if (!conf.configured)
-		return;
-	flush_xtm_queues();
 }
 
 /* Launched in HTTP server thread. */

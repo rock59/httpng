@@ -133,7 +133,7 @@ end
 local load_router_module = function()
     -- Check both ways to get router module.
     router_module = require 'httpng.router'
-    router_module_c = require 'httpng.router_c'
+    --router_module_c = require 'httpng.router_c'
     local router_module_alt = require 'httpng'.router
     return ((router_module == nil) == (router_module_alt == nil))
 end
@@ -157,6 +157,9 @@ end
 local function get_new_router(use_c_router)
     ensure_router()
     if use_c_router then
+        if (router_module_c == nil) then
+            t.skip('no C router available')
+        end
         return router_module_c.new()
     end
     return router_module.new()

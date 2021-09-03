@@ -154,7 +154,7 @@ local function check_match(stashes, path, v)
     goto again
 end
 
-local function handle(unused, req, io)
+local function handle(req, io)
     local routes = req._used_router._routes
     req._stashes = {}
     local stashes = req._stashes

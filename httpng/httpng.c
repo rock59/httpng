@@ -159,6 +159,9 @@ typedef unsigned shuttle_count_t;
 # endif /* SUPPORT_SHUTDOWN */
 #endif /* SUPPORT_RECONFIG */
 
+#define SUPPORT_WEBSOCKETS
+//#undef SUPPORT_WEBSOCKETS
+
 struct listener_ctx;
 
 typedef struct {
@@ -369,10 +372,12 @@ typedef struct {
 typedef struct {
 	struct fiber *fiber;
 	struct fiber *recv_fiber; /* Fiber for WebSocket recv handler. */
+#ifdef SUPPORT_WEBSOCKETS
 	h2o_websocket_conn_t *ws_conn;
 	recv_data_t *recv_data; /* For WebSocket recv. */
 	struct fiber *tx_fiber; /* The one which services requests
 				 * from "our" HTTP server thread. */
+#endif /* SUPPORT_WEBSOCKETS */
 	waiter_t *waiter; /* Changed by TX thread. */
 	struct sockaddr_storage peer;
 	struct sockaddr_storage ouraddr;
@@ -382,16 +387,20 @@ typedef struct {
 	bool fiber_done;
 	bool sent_something;
 	bool cancelled; /* Changed by TX thread. */
+#ifdef SUPPORT_WEBSOCKETS
 	bool ws_send_failed; /* FIXME: Accessed from TX and HTTP threads. */
 
 	/* FIXME: It is changed by HTTP server thread w/o barriers
 	 * but checked everywhere. */
 	bool upgraded_to_websocket;
+#endif /* SUPPORT_WEBSOCKETS */
 
 	bool is_recv_fiber_waiting;
 	bool is_recv_fiber_cancelled;
 	bool in_recv_handler;
+#ifdef SUPPORT_WEBSOCKETS
 	char ws_client_key[WS_CLIENT_KEY_LEN];
+#endif /* SUPPORT_WEBSOCKETS */
 	union { /* Can use struct instead when debugging. */
 		lua_first_request_only_t req;
 		lua_response_struct_t resp;
@@ -785,6 +794,7 @@ call_in_http_thr_with_shuttle(shuttle_func_t *func, shuttle_t *shuttle)
 		shuttle->thread_ctx);
 }
 
+#ifdef SUPPORT_WEBSOCKETS
 /* Launched in TX thread. */
 static inline void
 call_in_http_thr_with_lua_handler_state(lua_handler_state_func_t *func,
@@ -794,6 +804,7 @@ call_in_http_thr_with_lua_handler_state(lua_handler_state_func_t *func,
 	call_from_tx(shuttle->thread_ctx->queue_from_tx, func, state,
 		shuttle->thread_ctx);
 }
+#endif /* SUPPORT_WEBSOCKETS */
 
 /* Launched in HTTP(S) server thread. */
 static inline void
@@ -814,6 +825,7 @@ call_in_http_thr_with_recv_data(recv_data_func_t *func, recv_data_t *recv_data)
 }
 #endif /* SHOULD_FREE_RECV_DATA_IN_HTTP_SERVER_THREAD */
 
+#ifdef SUPPORT_WEBSOCKETS
 /* Launched in HTTP(S) server thread. */
 static inline void
 call_in_tx_with_recv_data(recv_data_func_t *func, recv_data_t *recv_data)
@@ -821,6 +833,7 @@ call_in_tx_with_recv_data(recv_data_func_t *func, recv_data_t *recv_data)
 	assert(recv_data->parent_shuttle->thread_ctx == get_curr_thread_ctx());
 	call_from_http_thr(get_queue_to_tx(), func, recv_data);
 }
+#endif /* SUPPORT_WEBSOCKETS */
 
 /* Launched in HTTP server thread. */
 static inline void
@@ -838,6 +851,7 @@ call_in_http_thr_with_thread_ctx(thread_ctx_func_t *func,
 	call_from_tx(thread_ctx->queue_from_tx, func, thread_ctx, thread_ctx);
 }
 
+#ifdef SUPPORT_WEBSOCKETS
 /* Launched in HTTP server thread. */
 static inline recv_data_t *
 alloc_recv_data(void)
@@ -847,7 +861,9 @@ alloc_recv_data(void)
 		malloc(conf.recv_data_size);
 	return recv_data;
 }
+#endif /* SUPPORT_WEBSOCKETS */
 
+#ifdef SUPPORT_WEBSOCKETS
 /* Launched in HTTP server thread. */
 static inline recv_data_t *
 prepare_websocket_recv_data(shuttle_t *parent, unsigned payload_bytes)
@@ -859,6 +875,7 @@ prepare_websocket_recv_data(shuttle_t *parent, unsigned payload_bytes)
 	recv_data->payload_bytes = payload_bytes;
 	return recv_data;
 }
+#endif /* SUPPORT_WEBSOCKETS */
 
 /* Launched in HTTP server thread or in TX thread when
  * !SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD. */
@@ -869,6 +886,7 @@ free_shuttle_internal(shuttle_t *shuttle)
 	free_shuttle(shuttle);
 }
 
+#ifdef SUPPORT_WEBSOCKETS
 /* Launched in HTTP server thread or in TX thread when
  * !SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD.
  * FIXME: Only assert is different, can optimize for release build. */
@@ -878,6 +896,7 @@ free_lua_websocket_shuttle_internal(shuttle_t *shuttle)
 	assert(!shuttle->disposed);
 	free_shuttle(shuttle);
 }
+#endif /* SUPPORT_WEBSOCKETS */
 
 /* Launched in TX thread. */
 static void
@@ -903,8 +922,10 @@ free_shuttle_from_tx(shuttle_t *shuttle)
 static inline void
 free_lua_shuttle_from_tx(shuttle_t *shuttle)
 {
+#ifdef SUPPORT_WEBSOCKETS
 	assert(!((lua_handler_state_t *)&shuttle->payload)
 		->upgraded_to_websocket);
+#endif /* SUPPORT_WEBSOCKETS */
 	free_shuttle_from_tx(shuttle);
 }
 #endif /* SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD */
@@ -913,8 +934,10 @@ free_lua_shuttle_from_tx(shuttle_t *shuttle)
 static inline void
 free_lua_shuttle_from_tx_in_http_thr(shuttle_t *shuttle)
 {
+#ifdef SUPPORT_WEBSOCKETS
 	assert(!((lua_handler_state_t *)&shuttle->payload)
 		->upgraded_to_websocket);
+#endif /* SUPPORT_WEBSOCKETS */
 	free_shuttle_from_tx_in_http_thr(shuttle);
 }
 
@@ -927,7 +950,9 @@ free_cancelled_lua_not_ws_shuttle_from_tx(shuttle_t *shuttle)
 #else /* SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD */
 	lua_handler_state_t *const state =
 		(lua_handler_state_t *)&shuttle->payload;
+#ifdef SUPPORT_WEBSOCKETS
 	assert(!state->upgraded_to_websocket);
+#endif /* SUPPORT_WEBSOCKETS */
 	if (state->sent_something)
 		/* FIXME: We may check that all send operations has already
 		 * been executed and skip going into HTTP server thread
@@ -940,6 +965,7 @@ free_cancelled_lua_not_ws_shuttle_from_tx(shuttle_t *shuttle)
 #endif /* SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD */
 }
 
+#ifdef SUPPORT_WEBSOCKETS
 /* Launched in TX thread. */
 static inline void
 free_lua_websocket_shuttle_from_tx(shuttle_t *shuttle)
@@ -964,18 +990,22 @@ free_lua_websocket_shuttle_from_tx(shuttle_t *shuttle)
 	free_lua_websocket_shuttle_internal(shuttle);
 #endif /* SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD */
 }
+#endif /* SUPPORT_WEBSOCKETS */
 
 /* Launched in TX thread. */
 static inline void
 free_cancelled_lua_shuttle_from_tx(lua_handler_state_t *state)
 {
 	shuttle_t *const shuttle = get_shuttle(state);
+#ifdef SUPPORT_WEBSOCKETS
 	if (state->upgraded_to_websocket)
 		free_lua_websocket_shuttle_from_tx(shuttle);
 	else
+#endif /* SUPPORT_WEBSOCKETS */
 		free_cancelled_lua_not_ws_shuttle_from_tx(shuttle);
 }
 
+#ifdef SUPPORT_WEBSOCKETS
 /* Launched in HTTP server thread or in TX thread when
  * !SHOULD_FREE_RECV_DATA_IN_HTTP_SERVER_THREAD. */
 static void
@@ -983,7 +1013,9 @@ free_lua_websocket_recv_data_internal(recv_data_t *recv_data)
 {
 	free(recv_data);
 }
+#endif /* SUPPORT_WEBSOCKETS */
 
+#ifdef SUPPORT_WEBSOCKETS
 /* Launched in TX thread. */
 static inline void
 free_lua_websocket_recv_data_from_tx(recv_data_t *recv_data)
@@ -995,6 +1027,7 @@ free_lua_websocket_recv_data_from_tx(recv_data_t *recv_data)
 	free_lua_websocket_recv_data_internal(recv_data);
 #endif /* SHOULD_FREE_RECV_DATA_IN_HTTP_SERVER_THREAD */
 }
+#endif /* SUPPORT_WEBSOCKETS */
 
 /* Launched in TX thread. */
 static inline void
@@ -1013,7 +1046,9 @@ cancel_processing_lua_req_in_tx(shuttle_t *shuttle)
 {
 	lua_handler_state_t *const state =
 		(lua_handler_state_t *)&shuttle->payload;
+#ifdef SUPPORT_WEBSOCKETS
 	assert(!state->upgraded_to_websocket);
+#endif /* SUPPORT_WEBSOCKETS */
 
 	/* We do not use fiber_cancel() because it causes exception
 	 * in Lua code so Lua handler have to use pcall() and even
@@ -1037,9 +1072,12 @@ cancel_processing_lua_req_in_tx(shuttle_t *shuttle)
 static void
 free_shuttle_lua(shuttle_t *shuttle)
 {
+#ifdef SUPPORT_WEBSOCKETS
 	lua_handler_state_t *const state =
 		(lua_handler_state_t *)(&shuttle->payload);
-	if (!state->upgraded_to_websocket) {
+	if (!state->upgraded_to_websocket)
+#endif /* SUPPORT_WEBSOCKETS */
+	{
 		shuttle->disposed = true;
 		call_in_tx_with_shuttle(cancel_processing_lua_req_in_tx,
 			shuttle);
@@ -1400,6 +1438,7 @@ perform_write_header(lua_State *L)
 	return 1;
 }
 
+#ifdef SUPPORT_WEBSOCKETS
 /* Launched in TX thread. */
 static void
 cancel_processing_lua_websocket_in_tx(lua_handler_state_t *state)
@@ -1408,6 +1447,7 @@ cancel_processing_lua_websocket_in_tx(lua_handler_state_t *state)
 	assert(!state->fiber_done);
 	state->cancelled = true;
 }
+#endif /* SUPPORT_WEBSOCKETS */
 
 /* Can be launched in TX thread or HTTP server thread. */
 static inline char *
@@ -1425,6 +1465,7 @@ get_router_entry_id(const lua_handler_state_t *state)
 	return "<unknown>";
 }
 
+#ifdef SUPPORT_WEBSOCKETS
 /* Launched in TX thread. */
 static void
 process_lua_websocket_received_data_in_tx(recv_data_t *recv_data)
@@ -1449,7 +1490,9 @@ process_lua_websocket_received_data_in_tx(recv_data_t *recv_data)
 	} else
 		free_lua_websocket_recv_data_from_tx(recv_data);
 }
+#endif /* SUPPORT_WEBSOCKETS */
 
+#ifdef SUPPORT_WEBSOCKETS
 /* Launched in HTTP server thread. */
 static void
 websocket_msg_callback(h2o_websocket_conn_t *conn,
@@ -1499,7 +1542,9 @@ websocket_msg_callback(h2o_websocket_conn_t *conn,
 		pos += bytes_to_send;
 	}
 }
+#endif /* SUPPORT_WEBSOCKETS */
 
+#ifdef SUPPORT_WEBSOCKETS
 /* Launched in HTTP server thread to postprocess upgrade to WebSocket. */
 static void
 postprocess_lua_req_upgrade_to_websocket(shuttle_t *shuttle)
@@ -1528,7 +1573,9 @@ postprocess_lua_req_upgrade_to_websocket(shuttle_t *shuttle)
 	/* anchor_dispose()/free_shuttle_lua() will be called by h2o. */
 	call_in_tx_continue_processing_lua_req(state);
 }
+#endif /* SUPPORT_WEBSOCKETS */
 
+#ifdef SUPPORT_WEBSOCKETS
 /* Launched in HTTP server thread. */
 static void
 postprocess_lua_req_websocket_send_text(lua_handler_state_t *state)
@@ -1545,7 +1592,9 @@ postprocess_lua_req_websocket_send_text(lua_handler_state_t *state)
 		state->ws_send_failed = true;
 	call_in_tx_continue_processing_lua_req(state);
 }
+#endif /* SUPPORT_WEBSOCKETS */
 
+#ifdef SUPPORT_WEBSOCKETS
 /* Launched in TX thread. */
 static int
 perform_ws_send_text(lua_State *L)
@@ -1594,7 +1643,9 @@ perform_ws_send_text(lua_State *L)
 	lua_pushboolean(L, state->ws_send_failed || state->cancelled);
 	return 1;
 }
+#endif /* SUPPORT_WEBSOCKETS */
 
+#ifdef SUPPORT_WEBSOCKETS
 /* Launched in HTTP server thread. */
 static void
 close_websocket(lua_handler_state_t *const state)
@@ -1605,14 +1656,18 @@ close_websocket(lua_handler_state_t *const state)
 	}
 	call_in_tx_continue_processing_lua_req(state);
 }
+#endif /* SUPPORT_WEBSOCKETS */
 
+#ifdef SUPPORT_WEBSOCKETS
 /* Launched in TX thread. */
 static inline void
 call_in_http_thr_close_websocket(lua_handler_state_t *state)
 {
 	call_in_http_thr_with_lua_handler_state(close_websocket, state);
 }
+#endif /* SUPPORT_WEBSOCKETS */
 
+#ifdef SUPPORT_WEBSOCKETS
 /* Launched in TX thread. */
 static int
 perform_ws_close(lua_State *L)
@@ -1646,7 +1701,9 @@ perform_ws_close(lua_State *L)
 	wait_for_lua_shuttle_return(state);
 	return 0;
 }
+#endif /* SUPPORT_WEBSOCKETS */
 
+#ifdef SUPPORT_WEBSOCKETS
 /* Launched in TX thread. */
 static int
 lua_websocket_recv_fiber_func(va_list ap)
@@ -1691,7 +1748,9 @@ lua_websocket_recv_fiber_func(va_list ap)
 
 	return 0;
 }
+#endif /* SUPPORT_WEBSOCKETS */
 
+#ifdef SUPPORT_WEBSOCKETS
 /* Launched in TX thread. */
 static int
 perform_upgrade_to_websocket(lua_State *L)
@@ -1784,6 +1843,7 @@ perform_upgrade_to_websocket(lua_State *L)
 	lua_setfield(L, -2, shuttle_field_name);
 	return 1;
 }
+#endif /* SUPPORT_WEBSOCKETS */
 
 #ifdef SUPPORT_SPLITTING_LARGE_BODY
 /* Launched in HTTP server thread. */
@@ -1995,7 +2055,9 @@ process_handler_failure_not_ws(shuttle_t *shuttle)
 	lua_handler_state_t *const state =
 		(lua_handler_state_t *)&shuttle->payload;
 	take_shuttle_ownership_lua(state);
+#ifdef SUPPORT_WEBSOCKETS
 	assert(!state->upgraded_to_websocket);
+#endif /* SUPPORT_WEBSOCKETS */
 	if (state->cancelled) {
 		/* There would be no more calls from HTTP server thread,
 		 * must clean up. */
@@ -2033,7 +2095,9 @@ process_handler_success_not_ws_with_send(lua_State *L, shuttle_t *shuttle)
 	lua_handler_state_t *const state =
 		(lua_handler_state_t *)&shuttle->payload;
 	take_shuttle_ownership_lua(state);
+#ifdef SUPPORT_WEBSOCKETS
 	assert(!state->upgraded_to_websocket);
+#endif /* SUPPORT_WEBSOCKETS */
 	if (state->cancelled) {
 		/* There would be no more calls from HTTP server
 		 * thread, must clean up. */
@@ -2222,7 +2286,9 @@ process_handler_success_not_ws_without_send(lua_State *L, shuttle_t *shuttle)
 {
 	lua_handler_state_t *const state =
 		(lua_handler_state_t *)&shuttle->payload;
+#ifdef SUPPORT_WEBSOCKETS
 	assert(!state->upgraded_to_websocket);
+#endif /* SUPPORT_WEBSOCKETS */
 	if (state->un.resp.any.is_last_send) {
 	Done:
 		state->fiber_done = true;
@@ -2263,6 +2329,7 @@ router_stash(lua_State *L)
 	return 1;
 }
 
+#ifdef SUPPORT_WEBSOCKETS
 /* Launched in TX thread. */
 static inline void
 handle_ws_free(lua_handler_state_t *state)
@@ -2274,6 +2341,7 @@ handle_ws_free(lua_handler_state_t *state)
 	}
 	free_lua_websocket_shuttle_from_tx(get_shuttle(state));
 }
+#endif /* SUPPORT_WEBSOCKETS */
 
 /* Launched in TX thread. */
 static int
@@ -2334,13 +2402,20 @@ lua_fiber_func(va_list ap)
 	state->un.resp.any.is_last_send = false;
 
 	/* Second param for Lua handler - io. */
-	lua_createtable(L, 0, 6);
+	lua_createtable(L, 0,
+			5
+#ifdef SUPPORT_WEBSOCKETS
+			+ 1
+#endif /* SUPPORT_WEBSOCKETS */
+			);
 	lua_pushcfunction(L, perform_write_header);
 	lua_setfield(L, -2, "write_header");
 	lua_pushcfunction(L, perform_write);
 	lua_setfield(L, -2, "write");
+#ifdef SUPPORT_WEBSOCKETS
 	lua_pushcfunction(L, perform_upgrade_to_websocket);
 	lua_setfield(L, -2, "upgrade_to_websocket");
+#endif /* SUPPORT_WEBSOCKETS */
 	lua_pushcfunction(L, perform_close);
 	lua_setfield(L, -2, "close");
 	lua_pushlightuserdata(L, shuttle);
@@ -2358,14 +2433,18 @@ lua_fiber_func(va_list ap)
 			/* No point trying to send something, connection
 			 * has already been closed. */
 			free_cancelled_lua_shuttle_from_tx(state);
+#ifdef SUPPORT_WEBSOCKETS
 		else if (state->upgraded_to_websocket)
 			handle_ws_free(state);
+#endif /* SUPPORT_WEBSOCKETS */
 		else
 			process_handler_failure_not_ws(shuttle);
 	} else if (state->cancelled)
 		free_cancelled_lua_shuttle_from_tx(state);
+#ifdef SUPPORT_WEBSOCKETS
 	else if (state->upgraded_to_websocket)
 		handle_ws_free(state);
+#endif /* SUPPORT_WEBSOCKETS */
 	else if (lua_isnil(L, -1))
 		process_handler_success_not_ws_without_send(L, shuttle);
 	else
@@ -2414,7 +2493,9 @@ process_lua_req_in_tx(shuttle_t *shuttle)
 	    == NULL)
 		RETURN_WITH_ERROR("Failed to create fiber");
 	state->fiber_done = false;
+#ifdef SUPPORT_WEBSOCKETS
 	state->tx_fiber = fiber_self();
+#endif /* SUPPORT_WEBSOCKETS */
 	++shuttle->thread_ctx->active_lua_fibers;
 	fiber_start(state->fiber, shuttle, new_L);
 }
@@ -2475,6 +2556,7 @@ lua_req_handler_ex(h2o_req_t *req,
 	}
 
 	state->un.req.router_data_len = router_data_len;
+#ifdef SUPPORT_WEBSOCKETS
 	const char *ws_client_key;
 	(void)h2o_is_websocket_handshake(req, &ws_client_key);
 	if (ws_client_key == NULL)
@@ -2484,6 +2566,7 @@ lua_req_handler_ex(h2o_req_t *req,
 		memcpy(state->ws_client_key, ws_client_key,
 			state->un.req.ws_client_key_len);
 	}
+#endif /* SUPPORT_WEBSOCKETS */
 
 	memcpy(state->un.req.method, req->method.base,
 		state->un.req.method_len);
@@ -2588,7 +2671,9 @@ lua_req_handler_ex(h2o_req_t *req,
 
 	state->sent_something = false;
 	state->cancelled = false;
+#ifdef SUPPORT_WEBSOCKETS
 	state->upgraded_to_websocket = false;
+#endif /* SUPPORT_WEBSOCKETS */
 	state->waiter = NULL;
 
 	socklen_t socklen = req->conn->callbacks->get_peername(req->conn,

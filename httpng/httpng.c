@@ -201,7 +201,6 @@ typedef struct {
 	unsigned listeners_created;
 	pthread_t tid;
 	bool push_from_tx_is_sleeping;
-	bool xtm_queues_flushed;
 	bool shutdown_req_sent; /* TX -> HTTP(S) server thread. */
 	bool shutdown_requested; /* Someone asked us to shut down thread. */
 #ifdef SUPPORT_GRACEFUL_THR_TERMINATION

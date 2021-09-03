@@ -264,9 +264,16 @@ g_shutdown.test_double_shutdown = function()
         http.shutdown)
 end
 
+local function do_shutdown()
+    local ok, err = pcall(http.shutdown)
+    if (not ok) then
+        print('Warning: shutdown() failed with error "' .. err .. '"')
+    end
+end
+
 g_bad_handlers = t.group 'bad_handlers'
 g_bad_handlers.before_each(ensure_shutdown_works)
-g_bad_handlers.after_each(function() pcall(http.shutdown) end)
+g_bad_handlers.after_each(do_shutdown)
 
 local write_handler_launched = false
 local bad_write_ok
@@ -706,7 +713,7 @@ local function kill_curls()
 end
 
 local function shutdown_and_kill_curls()
-    pcall(http.shutdown)
+    do_shutdown()
     kill_curls()
 end
 

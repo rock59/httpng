@@ -6,12 +6,14 @@
 #endif /* USE_LIBUV */
 #include <h2o.h>
 
+#ifdef SUPPORT_C_ROUTER
 struct lua_State;
 typedef void (fill_router_data_t)(struct lua_State *L, const char *path,
 	unsigned data_len, void *data);
 #define ROUTER_C_HANDLER_FIELD_NAME "_handle_request"
 #define ROUTER_C_HANDLER_PARAM_FIELD_NAME "_handle_request_param"
 #define ROUTER_FILL_ROUTER_DATA_FIELD_NAME "_fill_router_data"
+#endif /* SUPPORT_C_ROUTER */
 
 #include "process_helper.h"
 #include <fcntl.h>
@@ -390,7 +392,9 @@ static struct {
 	struct fiber *fiber_to_wake_on_reaping_done;
 	lua_h2o_handler_t *lua_handler;
 	sni_map_t **sni_maps;
+#ifdef SUPPORT_C_ROUTER
 	fill_router_data_t *fill_router_data;
+#endif /* SUPPORT_C_ROUTER */
 	double thread_termination_timeout;
 	double thr_timeout_start;
 	uint64_t openssl_security_level;
@@ -1773,6 +1777,7 @@ retrieve_more_body(shuttle_t *const shuttle)
 }
 #endif /* SUPPORT_SPLITTING_LARGE_BODY */
 
+#ifdef SUPPORT_C_ROUTER
 /* Launched in TX thread. */
 static inline void
 fill_router_data(lua_State *L, const char *path, unsigned data_len, void *data)
@@ -1780,6 +1785,7 @@ fill_router_data(lua_State *L, const char *path, unsigned data_len, void *data)
 	if (conf.fill_router_data != NULL)
 		conf.fill_router_data(L, path, data_len, data);
 }
+#endif /* SUPPORT_C_ROUTER */
 
 /* Launched in TX thread.
  * Returns !0 in case of error. */
@@ -1810,10 +1816,12 @@ fill_received_headers_and_body(lua_State *L, shuttle_t *shuttle)
 		current_offset += handle->name_size + 1 + handle->value_size;
 	}
 	lua_setfield(L, -2, "headers");
+#ifdef SUPPORT_C_ROUTER
 	fill_router_data(L, &state->un.req.buffer[
 			state->un.req.router_data_len],
 		state->un.req.router_data_len,
 		&state->un.req.buffer);
+#endif /* SUPPORT_C_ROUTER */
 #ifdef SUPPORT_SPLITTING_LARGE_BODY
 	if (!state->un.req.is_body_incomplete)
 #endif /* SUPPORT_SPLITTING_LARGE_BODY */
@@ -2659,7 +2667,11 @@ router_wrapper(lua_h2o_handler_t *self, h2o_req_t *req)
 static int
 register_lua_router(lua_State *L, int router_ref, const char **lerr)
 {
+#ifdef SUPPORT_C_ROUTER
 	lua_getmetatable(L, -2);
+#else /* SUPPORT_C_ROUTER */
+	lua_getmetatable(L, -1);
+#endif /* SUPPORT_C_ROUTER */
 	if (lua_isnil(L, -1)) {
 		*lerr = "router table has neither C nor Lua handler functions";
 		return 1;
@@ -2669,7 +2681,9 @@ register_lua_router(lua_State *L, int router_ref, const char **lerr)
 		*lerr = "there is no valid __call metamethod in router table";
 		return 1;
 	}
+#ifdef SUPPORT_C_ROUTER
 	conf.fill_router_data = NULL;
+#endif /* SUPPORT_C_ROUTER */
 
 	conf.lua_handler_ref = luaL_ref(L, LUA_REGISTRYINDEX);
 	unsigned thread_idx;
@@ -2686,6 +2700,7 @@ register_router(lua_State *L, int router_ref, const char **lerr)
 {
 	lua_rawgeti(L, LUA_REGISTRYINDEX, router_ref);
 
+#ifdef SUPPORT_C_ROUTER
 	lua_getfield(L, -1, ROUTER_FILL_ROUTER_DATA_FIELD_NAME);
 	if (lua_isnil(L, -1))
 		return register_lua_router(L, router_ref, lerr);
@@ -2723,6 +2738,9 @@ register_router(lua_State *L, int router_ref, const char **lerr)
 			.hostconf, user_handler,
 			user_handler_param, LUA_REFNIL);
 	return 0;
+#else /* SUPPORT_C_ROUTER */
+	return register_lua_router(L, router_ref, lerr);
+#endif /* SUPPORT_C_ROUTER */
 }
 
 /* Launched in HTTP server thread. */
@@ -4400,7 +4418,9 @@ on_shutdown_internal(lua_State *L, bool called_from_callback)
 	free(conf.thread_ctxs);
 	luaL_unref(L, LUA_REGISTRYINDEX, conf.lua_handler_ref);
 	conf.configured = false;
+#ifdef SUPPORT_C_ROUTER
 	conf.fill_router_data = NULL;
+#endif /* SUPPORT_C_ROUTER */
 	complain_loudly_about_leaked_fds();
 	conf.is_shutdown_in_progress = false;
 	return 0;

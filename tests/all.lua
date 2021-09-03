@@ -249,6 +249,7 @@ g_shutdown.test_simple_shutdown = function()
 end
 
 g_shutdown.test_shutdown_after_wrong_cfg = function()
+    t.fail_if(http.shutdown == nil, 'Shutdown is not supported')
     t.assert_error_msg_content_equals('No parameters specified',
         http.cfg)
     t.assert_error_msg_content_equals('Server is not launched',
@@ -256,6 +257,7 @@ g_shutdown.test_shutdown_after_wrong_cfg = function()
 end
 
 g_shutdown.test_unexpected_shutdown = function()
+    t.fail_if(http.shutdown == nil, 'Shutdown is not supported')
     t.assert_error_msg_content_equals('Server is not launched',
         http.shutdown)
 end
@@ -1115,6 +1117,7 @@ end
 
 g_wrong_config.test_combo3 = function()
     -- Crash or ASAN failure on broken versions.
+    ensure_shutdown_works()
     http._cfg_debug{inject_shutdown_error = true}
     pcall(g_shutdown.test_simple_shutdown)
     pcall(g_wrong_config.test_no_handlers)
@@ -1125,6 +1128,7 @@ end
 
 g_wrong_config.test_combo5 = function()
     -- ASAN failure on broken versions.
+    ensure_shutdown_works()
     http._cfg_debug{inject_shutdown_error = true}
     pcall(g_shutdown.test_simple_shutdown)
     pcall(g_wrong_config.test_handler_is_not_a_function)

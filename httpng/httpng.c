@@ -140,10 +140,24 @@ typedef unsigned shuttle_count_t;
 
 #define STR_PORT_LENGTH 8
 
+#define SUPPORT_SHUTDOWN
+//#undef SUPPORT_SHUTDOWN
 #define SUPPORT_GRACEFUL_THR_TERMINATION
 //#undef SUPPORT_GRACEFUL_THR_TERMINATION
 #define SUPPORT_RECONFIG
 //#undef SUPPORT_RECONFIG
+
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
+# ifndef SUPPORT_SHUTDOWN
+#  error "SUPPORT_GRACEFUL_THR_TERMINATION requires SUPPORT_SHUTDOWN"
+# endif /* SUPPORT_SHUTDOWN */
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
+
+#ifdef SUPPORT_RECONFIG
+# ifndef SUPPORT_SHUTDOWN
+#  error "SUPPORT_RECONFIG requires SUPPORT_SHUTDOWN"
+# endif /* SUPPORT_SHUTDOWN */
+#endif /* SUPPORT_RECONFIG */
 
 struct listener_ctx;
 
@@ -440,11 +454,13 @@ static struct {
 #ifdef SUPPORT_RECONFIG
 	bool hot_reload_in_progress;
 #endif /* SUPPORT_RECONFIG */
+#ifdef SUPPORT_SHUTDOWN
 	bool is_on_shutdown_setup;
 	bool is_shutdown_in_progress;
+#endif /* SUPPORT_SHUTDOWN */
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	bool reaper_should_exit;
 	bool reaper_exited;
-#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	bool is_thr_term_timeout_active;
 #endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 	bool inject_shutdown_error;
@@ -495,7 +511,9 @@ static void on_terminate_notifier_read(h2o_socket_t *sock, const char *err);
 #endif /* USE_LIBUV */
 static void init_terminate_notifier(thread_ctx_t *thread_ctx);
 static void deinit_terminate_notifier(thread_ctx_t *thread_ctx);
+#ifdef SUPPORT_SHUTDOWN
 static int on_shutdown_callback(lua_State *L);
+#endif /* SUPPORT_SHUTDOWN */
 
 /* Launched in TX thread. */
 static inline void
@@ -4222,6 +4240,7 @@ tell_thread_to_terminate_gracefully(thread_ctx_t *thread_ctx)
 }
 #endif /* SUPPORT_RECONFIG */
 
+#ifdef SUPPORT_SHUTDOWN
 /* Launched in TX thread. */
 static void
 configure_shutdown_callback(lua_State *L, bool setup)
@@ -4236,7 +4255,9 @@ configure_shutdown_callback(lua_State *L, bool setup)
 		fprintf(stderr, "Warning: box.ctl.on_shutdown() failed: %s\n",
 			lua_tostring(L, -1));
 }
+#endif /* SUPPORT_SHUTDOWN */
 
+#ifdef SUPPORT_SHUTDOWN
 /* Launched in TX thread. */
 static void
 setup_on_shutdown(lua_State *L, bool setup, bool called_from_callback)
@@ -4273,6 +4294,7 @@ setup_on_shutdown(lua_State *L, bool setup, bool called_from_callback)
 	} else
 		fprintf(stderr, "Warning: global 'box' is not a table\n");
 }
+#endif /* SUPPORT_SHUTDOWN */
 
 /* Launched in TX thread. */
 static void
@@ -4287,6 +4309,7 @@ wait_for_exiting_tx_fiber(thread_ctx_t *thread_ctx)
 		fiber_wakeup(next_fiber_to_wake);
 }
 
+#ifdef SUPPORT_SHUTDOWN
 /* Launched in TX thread. */
 static void
 reap_finished_thread(thread_ctx_t *thread_ctx)
@@ -4314,7 +4337,9 @@ reap_finished_thread(thread_ctx_t *thread_ctx)
 		XTM_QUEUE_MUST_CLOSE_CONSUMER_READFD);
 	my_xtm_delete_queue_from_tx(thread_ctx);
 }
+#endif /* SUPPORT_SHUTDOWN */
 
+#ifdef SUPPORT_SHUTDOWN
 /* Launched in TX thread.
  * Returns error message in case of error. */
 static const char *
@@ -4351,6 +4376,7 @@ Exit:
 #endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 	return result;
 }
+#endif /* SUPPORT_SHUTDOWN */
 
 #ifdef SUPPORT_RECONFIG
 /* Launched in HTTP server thread.
@@ -4362,6 +4388,7 @@ become_ungraceful(thread_ctx_t *thread_ctx)
 }
 #endif /* SUPPORT_RECONFIG */
 
+#ifdef SUPPORT_SHUTDOWN
 /* Launched in TX thread. */
 static void
 reap_terminating_threads_ungracefully(void)
@@ -4404,6 +4431,7 @@ reap_terminating_threads_ungracefully(void)
 	assert(err == NULL);
 	conf.reaping_flags &= ~REAPING_UNGRACEFUL;
 }
+#endif /* SUPPORT_SHUTDOWN */
 
 #ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 /* Launched in TX thread. */
@@ -4439,6 +4467,7 @@ dispose_h2o_configs(void)
 		h2o_config_dispose(&conf.thread_ctxs[thr_idx].globalconf);
 }
 
+#ifdef SUPPORT_SHUTDOWN
 /* Launched in TX thread. */
 static int
 on_shutdown_internal(lua_State *L, bool called_from_callback)
@@ -4506,20 +4535,25 @@ on_shutdown_internal(lua_State *L, bool called_from_callback)
 	conf.is_shutdown_in_progress = false;
 	return 0;
 }
+#endif /* SUPPORT_SHUTDOWN */
 
+#ifdef SUPPORT_SHUTDOWN
 /* Launched in TX thread. */
 static int
 on_shutdown_callback(lua_State *L)
 {
 	return on_shutdown_internal(L, true);
 }
+#endif /* SUPPORT_SHUTDOWN */
 
+#ifdef SUPPORT_SHUTDOWN
 /* Launched in TX thread. */
 static int
 on_shutdown_for_user(lua_State *L)
 {
 	return on_shutdown_internal(L, false);
 }
+#endif /* SUPPORT_SHUTDOWN */
 
 #ifdef SUPPORT_RECONFIG
 /* Launched in TX thread. */
@@ -4540,7 +4574,9 @@ prepare_thread_ctx(unsigned thread_idx)
 	thread_ctx->listeners_created = 0;
 	thread_ctx->num_connections = 0;
 	thread_ctx->active_lua_fibers = 0;
+#ifdef SUPPORT_SHUTDOWN
 	thread_ctx->fiber_to_wake_on_shutdown = NULL;
+#endif /* SUPPORT_SHUTDOWN */
 }
 
 /* Launched in TX thread. */
@@ -5450,10 +5486,12 @@ cfg(lua_State *L)
 
 	assert(!conf.cfg_in_progress);
 	conf.cfg_in_progress = true;
+#ifdef SUPPORT_SHUTDOWN
 	if (conf.is_shutdown_in_progress) {
 		lerr = "shutdown is in progress";
 		goto error_something;
 	}
+#endif /* SUPPORT_SHUTDOWN */
 	if (conf.configured)
 #ifdef SUPPORT_RECONFIG
 		return reconfigure(L);
@@ -5553,8 +5591,10 @@ cfg(lua_State *L)
 	    NULL)
 		goto threads_launch_fail;
 
+#ifdef SUPPORT_SHUTDOWN
 	if (!conf.is_on_shutdown_setup)
 		setup_on_shutdown(L, true, false);
+#endif /* SUPPORT_SHUTDOWN */
 	conf.configured = true;
 	conf.cfg_in_progress = false;
 	return 0;
@@ -5772,7 +5812,9 @@ get_router_data(shuttle_t *shuttle, unsigned *max_len)
 
 static const struct luaL_Reg mylib[] = {
 	{"cfg", cfg},
+#ifdef SUPPORT_SHUTDOWN
 	{"shutdown", on_shutdown_for_user},
+#endif /* SUPPORT_SHUTDOWN */
 #ifdef SUPPORT_RECONFIG
 	{"force_decrease_threads", force_decrease_threads},
 #endif /* SUPPORT_RECONFIG */

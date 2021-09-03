@@ -58,6 +58,8 @@ endif()
 set(TARANTOOL_FIND_REQUIRED ON)
 find_package(Tarantool REQUIRED)
 include_directories(${TARANTOOL_INCLUDE_DIRS} third_party/h2o/include
+    third_party/h2o/deps/picotls/include
+    third_party/h2o/deps/quicly/include
     third_party include)
 
 function(build_module module files)

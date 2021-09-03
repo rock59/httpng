@@ -7,6 +7,7 @@ local curl_bin = 'curl'
 local router_module
 local router_module_c
 local router_checked = false
+local debug_wait_process = require 'test_helpers'.debug_wait_process
 
 local stubborn_handler = function(req, io)
 ::again::
@@ -88,7 +89,7 @@ local get_client_result = function(ph)
         return ph:wait().exit_code
     end
 
-    local ok, status = pcall(http._debug_wait_process, ph)
+    local ok, status = pcall(debug_wait_process, ph)
     if not ok then
         error('Unable to determine process exit code, reason: ' .. status)
     end
@@ -716,7 +717,7 @@ local function kill_curls()
     else
         for _, curl in pairs(curls) do
             os.execute('sh -c "kill ' .. curl .. '" 2>/dev/null')
-            pcall(http._debug_wait_process, curl) -- Avoid zombies.
+            pcall(debug_wait_process, curl) -- Avoid zombies.
         end
     end
     curls = nil

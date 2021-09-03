@@ -102,6 +102,7 @@ set (HTTPNG_C_SRC
 set(HTTPNG_SRC ${HTTPNG_C_SRC} ${HEADERS})
 
 build_module(httpng_c "${HTTPNG_SRC}")
+build_module(test_helpers httpng/test_helpers.c)
 if (BUILD_C_ROUTER)
     build_module(router "httpng/router.c")
     set_target_properties(router PROPERTIES OUTPUT_NAME ${CMAKE_CURRENT_BINARY_DIR}/httpng/router_c)
@@ -147,6 +148,7 @@ endif (NOT(ENABLE_ASAN))
 
 # Install library
 install(TARGETS httpng_c LIBRARY DESTINATION ${TARANTOOL_INSTALL_LIBDIR})
+install(TARGETS test_helpers LIBRARY DESTINATION ${TARANTOOL_INSTALL_LIBDIR})
 if (BUILD_C_ROUTER)
     install(TARGETS router LIBRARY DESTINATION ${TARANTOOL_INSTALL_LIBDIR}/httpng)
 endif (BUILD_C_ROUTER)
@@ -156,3 +158,4 @@ add_executable(process_helper httpng/process_helper.c)
 set_target_properties(process_helper PROPERTIES OUTPUT_NAME ${CMAKE_CURRENT_SOURCE_DIR}/tests/process_helper)
 
 add_custom_target(test COMMAND "$ENV{SHELL}" "-c" "${CMAKE_CURRENT_SOURCE_DIR}/tests/tests_helper.sh")
+add_dependencies(test test_helpers)

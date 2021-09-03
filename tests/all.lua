@@ -190,6 +190,7 @@ g_wrong_config_requires_shutdown.test_no_handlers = function()
     t.assert_error_msg_content_equals('No handlers specified', http.cfg, {})
 end
 
+--[[
 g_wrong_config.test_c_sites = function()
     t.assert_error_msg_content_equals('c_sites_func must be a function',
         http.cfg, { c_sites_func = 42 })
@@ -204,6 +205,7 @@ g_wrong_config.test_c_sites_wrong = function()
     t.assert_error_msg_content_equals('c_sites_func() returned wrong data type',
         http.cfg, { c_sites_func = function() return 42 end })
 end
+--]]
 
 g_wrong_config.test_wrong_param_type = function()
     t.assert_error_msg_content_equals('parameter threads is not a number',

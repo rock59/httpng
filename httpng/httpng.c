@@ -161,6 +161,9 @@ typedef unsigned shuttle_count_t;
 #define SUPPORT_WEBSOCKETS
 //#undef SUPPORT_WEBSOCKETS
 
+#define SUPPORT_C_HANDLERS
+#undef SUPPORT_C_HANDLERS
+
 struct listener_ctx;
 
 typedef struct {
@@ -268,12 +271,14 @@ typedef int (*req_handler_t)(h2o_handler_t *, h2o_req_t *);
 
 typedef int (*init_userdata_in_tx_t)(void *); /* Returns 0 on success. */
 
+#ifdef SUPPORT_C_HANDLERS
 typedef struct {
 	const char *path;
 	req_handler_t handler;
 	init_userdata_in_tx_t init_userdata_in_tx;
 	void *init_userdata_in_tx_param;
 } path_desc_t;
+#endif /* SUPPORT_C_HANDLERS */
 
 typedef struct listener_ctx {
 	h2o_accept_ctx_t accept_ctx;
@@ -2719,6 +2724,7 @@ is_router_used(void)
 }
 #endif /* SUPPORT_RECONFIG */
 
+#ifdef SUPPORT_C_HANDLERS
 /* Launched in TX thread. */
 static h2o_pathconf_t *
 register_handler(h2o_hostconf_t *hostconf,
@@ -2731,6 +2737,7 @@ register_handler(h2o_hostconf_t *hostconf,
 	handler->on_req = on_req;
 	return pathconf;
 }
+#endif /* SUPPORT_C_HANDLERS */
 
 /* Launched in TX thread. */
 static h2o_pathconf_t *
@@ -5199,6 +5206,7 @@ apply_new_config(uint64_t max_body_len, uint64_t max_conn_per_thread,
 #endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 }
 
+#ifdef SUPPORT_C_HANDLERS
 /* Launched in TX thread. */
 static const char *
 get_c_handlers(lua_State *L, int idx, const path_desc_t **path_descs_ptr)
@@ -5219,7 +5227,9 @@ get_c_handlers(lua_State *L, int idx, const path_desc_t **path_descs_ptr)
 	*path_descs_ptr = (path_desc_t *)lua_touserdata(L, -1);
 	return NULL;
 }
+#endif /* SUPPORT_C_HANDLERS */
 
+#ifdef SUPPORT_C_HANDLERS
 /* Launched in TX thread. */
 static const char *
 register_c_handlers(const path_desc_t *path_descs,
@@ -5246,6 +5256,7 @@ register_c_handlers(const path_desc_t *path_descs,
 	*count_ptr = path_desc - path_descs;
 	return NULL;
 }
+#endif /* SUPPORT_C_HANDLERS */
 
 /* Launched in TX thread. */
 static const char *
@@ -5271,7 +5282,11 @@ register_hosts(void)
 /* Launched in TX thread. */
 static const char *
 configure_handler_security_listen(lua_State *L, int idx,
-	unsigned *lua_site_count_ptr, unsigned c_handlers_count)
+	unsigned *lua_site_count_ptr
+#ifdef SUPPORT_C_HANDLERS
+	, unsigned c_handlers_count
+#endif /* SUPPORT_C_HANDLERS */
+	)
 {
 	const char *lerr;
 	unsigned lua_site_count = 0;
@@ -5282,7 +5297,11 @@ configure_handler_security_listen(lua_State *L, int idx,
 		return lerr;
 
 	*lua_site_count_ptr = lua_site_count;
-	if (c_handlers_count + lua_site_count == 0)
+	if (
+#ifdef SUPPORT_C_HANDLERS
+		c_handlers_count +
+#endif /* SUPPORT_C_HANDLERS */
+		lua_site_count == 0)
 		return "No handlers specified";
 
 	if (lua_site_count != 0 && conf.shuttle_size < sizeof(shuttle_t) +
@@ -5364,6 +5383,7 @@ launch_reaper_fiber(void)
 }
 #endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 
+#ifdef SUPPORT_C_HANDLERS
 /* Launched in TX thread. */
 static const char *
 init_userdata(const path_desc_t *path_descs)
@@ -5379,6 +5399,7 @@ init_userdata(const path_desc_t *path_descs)
 	} while ((++path_desc)->path != NULL);
 	return NULL;
 }
+#endif /* SUPPORT_C_HANDLERS */
 
 #ifdef SUPPORT_SPLITTING_LARGE_BODY
 /* Launched in TX thread. */
@@ -5587,10 +5608,12 @@ cfg(lua_State *L)
 	}
 #endif /* SUPPORT_RECONFIG */
 
+#ifdef SUPPORT_C_HANDLERS
 	const path_desc_t *path_descs = NULL;
 	if ((lerr = get_c_handlers(L, LUA_STACK_IDX_TABLE, &path_descs)) !=
 	    NULL)
 		goto error_c_sites;
+#endif /* SUPPORT_C_HANDLERS */
 
 	/* N. b.: This macro uses goto. */
 	PROCESS_OPTIONAL_PARAMS();
@@ -5620,15 +5643,21 @@ cfg(lua_State *L)
 	if ((lerr = register_hosts()) != NULL)
 		goto register_host_failed;
 
+#ifdef SUPPORT_C_HANDLERS
 	unsigned c_handlers_count = 0;
 	if ((lerr = register_c_handlers(path_descs, &c_handlers_count)) !=
 	    NULL)
 		goto c_desc_empty;
+#endif /* SUPPORT_C_HANDLERS */
 
 	unsigned lua_site_count = 0;
 
 	if ((lerr = configure_handler_security_listen(L, LUA_STACK_IDX_TABLE,
-	    &lua_site_count, c_handlers_count)) != NULL)
+	    &lua_site_count
+#ifdef SUPPORT_C_HANDLERS
+	    , c_handlers_count
+#endif /* SUPPORT_C_HANDLERS */
+	    )) != NULL)
 		goto invalid_handler;
 
 #if 0
@@ -5650,8 +5679,10 @@ cfg(lua_State *L)
 	if ((lerr = launch_reaper_fiber()) != NULL)
 		goto reaper_fiber_fail;
 #endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
+#ifdef SUPPORT_C_HANDLERS
 	if ((lerr = init_userdata(path_descs)) != NULL)
 		goto userdata_init_fail;
+#endif /* SUPPORT_C_HANDLERS */
 	unsigned thr_init_idx = 0;
 	for (; thr_init_idx < conf.num_threads; ++thr_init_idx)
 		if (!init_worker_thread(thr_init_idx)) {
@@ -5688,7 +5719,9 @@ threads_launch_fail:
 	terminate_and_join_threads(0, thr_launch_idx);
 threads_init_fail:
 	deinit_worker_threads(0, thr_init_idx);
+#ifdef SUPPORT_C_HANDLERS
 userdata_init_fail:
+#endif /* SUPPORT_C_HANDLERS */
 #ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	terminate_reaper_fiber();
 reaper_fiber_fail:
@@ -5702,14 +5735,18 @@ xtm_to_tx_fail:
 	conf_sni_map_cleanup();
 invalid_handler:
 	unref_on_config_failure(L, lua_site_count);
+#ifdef SUPPORT_C_HANDLERS
 c_desc_empty:
+#endif /* SUPPORT_C_HANDLERS */
 register_host_failed:
 	/* N.b.: h2o currently can't "unregister" host(s). */
 	dispose_h2o_configs();
 	free(conf.thread_ctxs);
 thread_ctxs_alloc_failed:
 error_parameter_not_a_number:
+#ifdef SUPPORT_C_HANDLERS
 error_c_sites:
+#endif /* SUPPORT_C_HANDLERS */
 error_something:
 error_no_parameters:
 	conf.cfg_in_progress = false;
@@ -5780,6 +5817,7 @@ error_no_parameters:
 	return luaL_error(L, lerr);
 }
 
+#ifdef SUPPORT_C_ROUTER
 /* Launched in HTTP server thread. */
 void *
 get_router_data(shuttle_t *shuttle, unsigned *max_len)
@@ -5789,6 +5827,7 @@ get_router_data(shuttle_t *shuttle, unsigned *max_len)
 		(lua_handler_state_t *)&shuttle->payload;
 	return &state->un.req.buffer;
 }
+#endif /* SUPPORT_C_ROUTER */
 
 static const struct luaL_Reg mylib[] = {
 	{"cfg", cfg},

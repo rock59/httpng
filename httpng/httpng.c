@@ -140,6 +140,8 @@ typedef unsigned shuttle_count_t;
 
 #define STR_PORT_LENGTH 8
 
+#define SUPPORT_GRACEFUL_THR_TERMINATION
+//#undef SUPPORT_GRACEFUL_THR_TERMINATION
 #define SUPPORT_RECONFIG
 //#undef SUPPORT_RECONFIG
 
@@ -202,8 +204,10 @@ typedef struct {
 	bool xtm_queues_flushed;
 	bool shutdown_req_sent; /* TX -> HTTP(S) server thread. */
 	bool shutdown_requested; /* Someone asked us to shut down thread. */
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	bool use_graceful_shutdown;
 	bool do_not_exit_tx_fiber;
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 	bool should_notify_tx_done;
 	bool tx_done_notification_received;
 	bool tx_fiber_should_exit;
@@ -390,16 +394,20 @@ static struct {
 	listener_cfg_t *listener_cfgs;
 	thread_ctx_t *thread_ctxs;
 	struct fiber *(tx_fiber_ptrs[MAX_threads]);
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	struct fiber *reaper_fiber;
 	struct fiber *fiber_to_wake_by_reaper_fiber;
 	struct fiber *fiber_to_wake_on_reaping_done;
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 	lua_h2o_handler_t *lua_handler;
 	sni_map_t **sni_maps;
 #ifdef SUPPORT_C_ROUTER
 	fill_router_data_t *fill_router_data;
 #endif /* SUPPORT_C_ROUTER */
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	double thread_termination_timeout;
 	double thr_timeout_start;
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 	uint64_t openssl_security_level;
 	long min_tls_proto_version;
 	shuttle_count_t max_shuttles_per_thread;
@@ -437,7 +445,9 @@ static struct {
 	bool is_shutdown_in_progress;
 	bool reaper_should_exit;
 	bool reaper_exited;
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	bool is_thr_term_timeout_active;
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 	bool inject_shutdown_error;
 } conf = {
 	.tfo_queues = H2O_DEFAULT_LENGTH_TCP_FASTOPEN_QUEUE,
@@ -618,6 +628,7 @@ my_lua_tointegerx(lua_State *L, int idx, int *ok)
 	return (*ok = lua_isnumber(L, idx)) ? lua_tointeger(L, idx) : 0;
 }
 
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 /* Launched in TX thread.
  * FIXME: Use lua_tonumberx() when we would no longer care about
  * older Tarantool versions. */
@@ -626,6 +637,7 @@ my_lua_tonumberx(lua_State *L, int idx, int *ok)
 {
 	return (*ok = lua_isnumber(L, idx)) ? lua_tonumber(L, idx) : 0;
 }
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 
 /* Launched in HTTP server thread. */
 static inline lua_handler_state_t *
@@ -2100,8 +2112,10 @@ tx_done(thread_ctx_t *thread_ctx)
 	uv_stop(&thread_ctx->loop);
 #endif /* USE_LIBUV */
 	thread_ctx->tx_done_notification_received = true;
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	if (thread_ctx->do_not_exit_tx_fiber)
 		return;
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 	call_in_tx_with_thread_ctx(tell_tx_fiber_to_exit, thread_ctx);
 }
 
@@ -3702,7 +3716,9 @@ reset_thread_ctx(unsigned idx)
 	thread_ctx->tx_fiber_should_exit = false;
 	thread_ctx->shutdown_req_sent = false;
 	thread_ctx->shutdown_requested = false;
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	thread_ctx->use_graceful_shutdown = true;
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 	thread_ctx->tx_done_notification_received = false;
 	thread_ctx->tx_fiber_finished = false;
 	thread_ctx->thread_finished = false;
@@ -3881,18 +3897,25 @@ close_existing_connections(thread_ctx_t *thread_ctx)
 
 /* Launched in HTTP server thread. */
 static void
-prepare_worker_for_shutdown(thread_ctx_t *thread_ctx,
-	bool use_graceful_shutdown)
+prepare_worker_for_shutdown(thread_ctx_t *thread_ctx
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
+	, bool use_graceful_shutdown
+#endif /*  SUPPORT_GRACEFUL_THR_TERMINATION */
+	)
 {
 	/* FIXME: If we want to send something through existing
 	 * connections, should do it now (accepts are already
 	 * blocked). */
 
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	if (use_graceful_shutdown)
 		h2o_context_request_shutdown(&thread_ctx->ctx);
 	else
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 		close_existing_connections(thread_ctx);
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	thread_ctx->do_not_exit_tx_fiber = use_graceful_shutdown;
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 
 	fprintf(stderr, "Thread #%u: shutdown request received, "
 		"waiting for TX processing to complete...\n",
@@ -3902,11 +3925,18 @@ prepare_worker_for_shutdown(thread_ctx_t *thread_ctx,
 
 /* Launched in HTTP server thread. */
 static void
-handle_worker_shutdown(thread_ctx_t *thread_ctx, bool use_graceful_shutdown)
+handle_worker_shutdown(thread_ctx_t *thread_ctx
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
+	, bool use_graceful_shutdown
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
+	)
 {
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	if (!use_graceful_shutdown)
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 		goto done;
 
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	close_existing_connections(thread_ctx);
 
 	/* There can still be requests in flight. */
@@ -3922,6 +3952,7 @@ handle_worker_shutdown(thread_ctx_t *thread_ctx, bool use_graceful_shutdown)
 	while (!thread_ctx->tx_done_notification_received)
 		h2o_evloop_run(loop, 1);
 #endif /* USE_LIBUV */
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 done:
 	h2o_make_shutdown_ungraceful(&thread_ctx->ctx);
 }
@@ -3961,13 +3992,21 @@ worker_func(void *param)
 	uv_read_stop((uv_stream_t *)&listener_ctx->uv_tcp_listener);
 	uv_close((uv_handle_t *)&listener_ctx->uv_tcp_listener, NULL);
 
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	const bool use_graceful_shutdown = thread_ctx->use_graceful_shutdown;
 	prepare_worker_for_shutdown(thread_ctx, use_graceful_shutdown);
+#else /* SUPPORT_GRACEFUL_THR_TERMINATION */
+	prepare_worker_for_shutdown(thread_ctx);
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 
 	/* Process remaining requests from TX thread. */
 	uv_run(&thread_ctx->loop, UV_RUN_DEFAULT);
 	assert(thread_ctx->tx_done_notification_received);
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	handle_worker_shutdown(thread_ctx, use_graceful_shutdown);
+#else /* SUPPORT_GRACEFUL_THR_TERMINATION */
+	handle_worker_shutdown(thread_ctx);
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 #else /* USE_LIBUV */
 	thread_ctx->sock_from_tx =
 		h2o_evloop_socket_create(thread_ctx->ctx.loop,
@@ -3984,13 +4023,21 @@ worker_func(void *param)
 	listening_sockets_stop_read(thread_ctx);
 	close_listening_sockets(thread_ctx);
 
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	const bool use_graceful_shutdown = thread_ctx->use_graceful_shutdown;
 	prepare_worker_for_shutdown(thread_ctx, use_graceful_shutdown);
+#else /* SUPPORT_GRACEFUL_THR_TERMINATION */
+	prepare_worker_for_shutdown(thread_ctx);
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 
 	/* Process remaining requests from TX thread. */
 	while (!thread_ctx->tx_done_notification_received)
 		h2o_evloop_run(loop, 1);
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	handle_worker_shutdown(thread_ctx, use_graceful_shutdown);
+#else /* SUPPORT_GRACEFUL_THR_TERMINATION */
+	handle_worker_shutdown(thread_ctx);
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 
 	h2o_socket_read_stop(thread_ctx->sock_from_tx);
 	h2o_socket_close(thread_ctx->sock_from_tx);
@@ -4155,7 +4202,9 @@ tell_thread_to_terminate_internal(thread_ctx_t *thread_ctx)
 static inline void
 tell_thread_to_terminate_immediately(thread_ctx_t *thread_ctx)
 {
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	thread_ctx->use_graceful_shutdown = false;
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 	__sync_synchronize();
 	/* FIXME: Should we explicitly request connections to be closed?
 	 * Thread may already be terminating gracefully. */
@@ -4167,7 +4216,9 @@ tell_thread_to_terminate_immediately(thread_ctx_t *thread_ctx)
 static inline void
 tell_thread_to_terminate_gracefully(thread_ctx_t *thread_ctx)
 {
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	assert(thread_ctx->use_graceful_shutdown);
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 	tell_thread_to_terminate_internal(thread_ctx);
 }
 #endif /* SUPPORT_RECONFIG */
@@ -4292,11 +4343,13 @@ reap_gracefully_terminating_threads(void)
 Exit:
 #endif /* SUPPORT_RECONFIG */
 	conf.reaping_flags &= ~REAPING_GRACEFUL;
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	if (conf.fiber_to_wake_on_reaping_done != NULL) {
 		struct fiber *const fiber = conf.fiber_to_wake_on_reaping_done;
 		conf.fiber_to_wake_on_reaping_done = NULL;
 		fiber_wakeup(fiber);
 	}
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 	return result;
 }
 
@@ -4340,9 +4393,11 @@ reap_terminating_threads_ungracefully(void)
 #endif /* SUPPORT_RECONFIG */
 
 	if (conf.reaping_flags & REAPING_GRACEFUL) {
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 		assert(conf.fiber_to_wake_on_reaping_done == NULL);
 		conf.fiber_to_wake_on_reaping_done = fiber_self();
 		fiber_yield();
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 		assert(!(conf.reaping_flags & REAPING_GRACEFUL));
 	}
 	const char *const err = reap_gracefully_terminating_threads();
@@ -4351,6 +4406,7 @@ reap_terminating_threads_ungracefully(void)
 	conf.reaping_flags &= ~REAPING_UNGRACEFUL;
 }
 
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 /* Launched in TX thread. */
 static void
 terminate_reaper_fiber(void)
@@ -4373,6 +4429,7 @@ terminate_reaper_fiber(void)
 	fiber_join(conf.reaper_fiber);
 	conf.reaper_fiber = NULL;
 }
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 
 /* Launched in TX thread. */
 static void
@@ -4403,7 +4460,9 @@ on_shutdown_internal(lua_State *L, bool called_from_callback)
 		return 0;
 	}
 	conf.is_shutdown_in_progress = true;
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	terminate_reaper_fiber();
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 	reap_terminating_threads_ungracefully();
 	if (conf.is_on_shutdown_setup)
 		setup_on_shutdown(L, false, called_from_callback);
@@ -4673,6 +4732,7 @@ add_thr_xtm_to_tx_fail:
 }
 #endif /* SUPPORT_RECONFIG */
 
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 /* Launched in TX thread. */
 static int
 reaper_fiber_func(va_list ap)
@@ -4721,14 +4781,17 @@ reaper_fiber_func(va_list ap)
 			fiber_yield();
 	}
 }
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 
 #ifdef SUPPORT_RECONFIG
 /* Launched in TX thread. */
 static void
 deactivate_reaper_fiber(void)
 {
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	conf.is_thr_term_timeout_active = false;
 	/* There is no point in awaking it. */
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 }
 #endif /* SUPPORT_RECONFIG */
 
@@ -4748,19 +4811,25 @@ hot_reload_remove_threads(unsigned threads)
 		tell_thread_to_terminate_gracefully(thread_ctx);
 	}
 
-	if (conf.thread_termination_timeout <= 0) {
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
+	if (conf.thread_termination_timeout <= 0)
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
+	{
 		deactivate_reaper_fiber();
 		return;
 	}
 
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	const double now = fiber_clock();
 	conf.thr_timeout_start = now;
 	conf.is_thr_term_timeout_active = true;
 	assert(conf.reaper_fiber != NULL);
 	fiber_wakeup(conf.reaper_fiber);
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 }
 #endif /* SUPPORT_RECONFIG */
 
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 /* Launched in TX thread. */
 static void
 configure_and_start_reaper_fiber(void)
@@ -4774,6 +4843,7 @@ configure_and_start_reaper_fiber(void)
 	conf.reaping_flags = 0;
 	fiber_start(conf.reaper_fiber);
 }
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 
 /* Launched in TX thread. */
 static inline const char *
@@ -4824,6 +4894,7 @@ parse_min_proto_version(const char *min_proto_version_str,
 	return "unknown min_proto_version specified";
 }
 
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 /* Launched in TX thread. */
 static const char *
 get_thread_termination_timeout(lua_State *L,
@@ -4840,6 +4911,7 @@ get_thread_termination_timeout(lua_State *L,
 	return is_number ? NULL :
 		"parameter thread_termination_timeout is not a number";
 }
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 
 /* Launched in TX thread. */
 static const char *
@@ -4982,8 +5054,10 @@ apply_max_body_len(uint64_t max_body_len)
 /* Launched in TX thread. */
 static inline void
 apply_new_config(uint64_t max_body_len, uint64_t max_conn_per_thread,
-	shuttle_count_t max_shuttles_per_thread,
-	double thread_termination_timeout
+	shuttle_count_t max_shuttles_per_thread
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
+	, double thread_termination_timeout
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 #ifdef SUPPORT_SPLITTING_LARGE_BODY
 	, bool use_body_split
 #endif /* SUPPORT_SPLITTING_LARGE_BODY */
@@ -5000,7 +5074,9 @@ apply_new_config(uint64_t max_body_len, uint64_t max_conn_per_thread,
 		conf.num_accepts = 8;
 #endif /* USE_LIBUV */
 	apply_max_body_len(max_body_len);
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	conf.thread_termination_timeout = thread_termination_timeout;
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 }
 
 /* Launched in TX thread. */
@@ -5155,6 +5231,7 @@ unref_on_config_failure(lua_State *L,
 			conf.lua_handler_ref);
 }
 
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 /* Launched in TX thread. */
 static const char *
 launch_reaper_fiber(void)
@@ -5165,6 +5242,7 @@ launch_reaper_fiber(void)
 	configure_and_start_reaper_fiber();
 	return NULL;
 }
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 
 /* Launched in TX thread. */
 static const char *
@@ -5282,10 +5360,12 @@ reconfigure(lua_State *L)
 		goto error_hot_reload_shuttle_size;
 	}
 
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	double thread_termination_timeout;
 	if ((lerr = get_thread_termination_timeout(L, LUA_STACK_IDX_TABLE,
 	    &thread_termination_timeout)) != NULL)
 		goto error_parameter_not_a_number;
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 
 #ifdef SUPPORT_SPLITTING_LARGE_BODY
 	const bool use_body_split = get_use_body_split(L, LUA_STACK_IDX_TABLE,
@@ -5298,7 +5378,10 @@ reconfigure(lua_State *L)
 		goto invalid_handler;
 
 	apply_new_config(max_body_len, max_conn_per_thread,
-		max_shuttles_per_thread, thread_termination_timeout
+		max_shuttles_per_thread
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
+		, thread_termination_timeout
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 #ifdef SUPPORT_SPLITTING_LARGE_BODY
 		, use_body_split
 #endif /* SUPPORT_SPLITTING_LARGE_BODY */
@@ -5390,10 +5473,12 @@ cfg(lua_State *L)
 	/* N. b.: This macro uses goto. */
 	PROCESS_OPTIONAL_PARAMS();
 
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	double thread_termination_timeout;
 	if ((lerr = get_thread_termination_timeout(L, LUA_STACK_IDX_TABLE,
 	    &thread_termination_timeout)) != NULL)
 		goto error_parameter_not_a_number;
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 
 #ifdef SUPPORT_SPLITTING_LARGE_BODY
 	const bool use_body_split = get_use_body_split(L, LUA_STACK_IDX_TABLE,
@@ -5439,8 +5524,10 @@ cfg(lua_State *L)
 	unsigned fiber_idx = 0;
 	if ((lerr = start_tx_fibers(&fiber_idx, conf.num_threads)) != NULL)
 		goto fibers_fail;
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	if ((lerr = launch_reaper_fiber()) != NULL)
 		goto reaper_fiber_fail;
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 	if ((lerr = init_userdata(path_descs)) != NULL)
 		goto userdata_init_fail;
 	unsigned thr_init_idx = 0;
@@ -5451,7 +5538,10 @@ cfg(lua_State *L)
 		}
 
 	apply_new_config(max_body_len, max_conn_per_thread,
-		max_shuttles_per_thread, thread_termination_timeout
+		max_shuttles_per_thread
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
+		, thread_termination_timeout
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 #ifdef SUPPORT_SPLITTING_LARGE_BODY
 		, use_body_split
 #endif /* SUPPORT_SPLITTING_LARGE_BODY */
@@ -5475,8 +5565,10 @@ threads_launch_fail:
 threads_init_fail:
 	deinit_worker_threads(0, thr_init_idx);
 userdata_init_fail:
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	terminate_reaper_fiber();
 reaper_fiber_fail:
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 fibers_fail:
 	terminate_tx_fibers(0, fiber_idx);
 xtm_to_tx_fail:

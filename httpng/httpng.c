@@ -472,7 +472,9 @@ static struct {
 	bool reaper_exited;
 	bool is_thr_term_timeout_active;
 #endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
+#ifdef SUPPORT_SHUTDOWN
 	bool inject_shutdown_error;
+#endif /* SUPPORT_SHUTDOWN */
 } conf = {
 	.tfo_queues = H2O_DEFAULT_LENGTH_TCP_FASTOPEN_QUEUE,
 	.on_shutdown_ref = LUA_REFNIL,
@@ -5767,10 +5769,12 @@ cfg_debug(lua_State *L)
 		lerr = "No parameters specified";
 		goto error_no_parameters;
 	}
+#ifdef SUPPORT_SHUTDOWN
 	lua_getfield(L, LUA_STACK_DEBUG_IDX_TABLE, "inject_shutdown_error");
 	if (!lua_isnil(L, -1))
 		conf.inject_shutdown_error = lua_toboolean(L, -1);
 	lua_pop(L, 1);
+#endif /* SUPPORT_SHUTDOWN */
 	return 0;
 
 error_no_parameters:

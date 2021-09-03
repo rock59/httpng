@@ -140,6 +140,9 @@ typedef unsigned shuttle_count_t;
 
 #define STR_PORT_LENGTH 8
 
+#define SUPPORT_RECONFIG
+//#undef SUPPORT_RECONFIG
+
 struct listener_ctx;
 
 typedef struct {
@@ -407,13 +410,17 @@ static struct {
 	unsigned num_accepts;
 #endif /* USE_LIBUV */
 	unsigned max_conn_per_thread;
+#ifdef SUPPORT_RECONFIG
 	unsigned num_desired_threads;
+#endif /* SUPPORT_RECONFIG */
 	unsigned num_threads;
 	unsigned max_headers_lua;
 	unsigned max_path_len_lua;
 	unsigned max_recv_bytes_lua_websocket;
 	int lua_handler_ref;
+#ifdef SUPPORT_RECONFIG
 	int new_lua_handler_ref;
+#endif /* SUPPORT_RECONFIG */
 	int router_ref;
 	int tfo_queues;
 	int on_shutdown_ref;
@@ -423,7 +430,9 @@ static struct {
 #endif /* SUPPORT_SPLITTING_LARGE_BODY */
 	bool configured;
 	bool cfg_in_progress;
+#ifdef SUPPORT_RECONFIG
 	bool hot_reload_in_progress;
+#endif /* SUPPORT_RECONFIG */
 	bool is_on_shutdown_setup;
 	bool is_shutdown_in_progress;
 	bool reaper_should_exit;
@@ -442,12 +451,14 @@ static struct sockaddr_un reaper_addr;
 static uint32_t box_null_cdata_type;
 
 static const char shuttle_field_name[] = "_shuttle";
+#ifdef SUPPORT_RECONFIG
 static const char msg_cant_reap[] =
 	"Unable to reconfigure until threads will shut down";
 static const char min_proto_version_reconf[] =
 	"min_proto_version can't be changed on reconfiguration";
 static const char openssl_security_level_reconf[] =
 	"openssl_security_level can't be changed on reconfiguration";
+#endif /* SUPPORT_RECONFIG */
 static const char msg_bad_cert_num[] =
 	"Only one key/certificate pair can be specified if SNI is disabled";
 #ifndef NDEBUG
@@ -2582,6 +2593,7 @@ lua_req_handler(lua_h2o_handler_t *self, h2o_req_t *req)
 	return 0;
 }
 
+#ifdef SUPPORT_RECONFIG
 /* Launched in TX thread. */
 static inline bool
 is_router_used(void)
@@ -2589,6 +2601,7 @@ is_router_used(void)
 	return conf.lua_handler->super.on_req !=
 		(int (*)(h2o_handler_t *, h2o_req_t *))lua_req_handler;
 }
+#endif /* SUPPORT_RECONFIG */
 
 /* Launched in TX thread. */
 static h2o_pathconf_t *
@@ -4149,6 +4162,7 @@ tell_thread_to_terminate_immediately(thread_ctx_t *thread_ctx)
 	tell_thread_to_terminate_internal(thread_ctx);
 }
 
+#ifdef SUPPORT_RECONFIG
 /* Launched in TX thread. */
 static inline void
 tell_thread_to_terminate_gracefully(thread_ctx_t *thread_ctx)
@@ -4156,6 +4170,7 @@ tell_thread_to_terminate_gracefully(thread_ctx_t *thread_ctx)
 	assert(thread_ctx->use_graceful_shutdown);
 	tell_thread_to_terminate_internal(thread_ctx);
 }
+#endif /* SUPPORT_RECONFIG */
 
 /* Launched in TX thread. */
 static void
@@ -4258,6 +4273,7 @@ reap_gracefully_terminating_threads(void)
 	const char *result;
 	assert(!(conf.reaping_flags & REAPING_GRACEFUL));
 	conf.reaping_flags |= REAPING_GRACEFUL;
+#ifdef SUPPORT_RECONFIG
 	unsigned thr_idx;
 	for (thr_idx = conf.num_threads - 1;
 	    thr_idx >= conf.num_desired_threads; --thr_idx) {
@@ -4270,8 +4286,11 @@ reap_gracefully_terminating_threads(void)
 		reap_finished_thread(thread_ctx);
 	}
 	conf.num_threads = conf.num_desired_threads;
+#endif /* SUPPORT_RECONFIG */
 	result = NULL;
+#ifdef SUPPORT_RECONFIG
 Exit:
+#endif /* SUPPORT_RECONFIG */
 	conf.reaping_flags &= ~REAPING_GRACEFUL;
 	if (conf.fiber_to_wake_on_reaping_done != NULL) {
 		struct fiber *const fiber = conf.fiber_to_wake_on_reaping_done;
@@ -4281,6 +4300,7 @@ Exit:
 	return result;
 }
 
+#ifdef SUPPORT_RECONFIG
 /* Launched in HTTP server thread.
  * N. b.: It may never be launched if thread terminates. */
 static void
@@ -4288,6 +4308,7 @@ become_ungraceful(thread_ctx_t *thread_ctx)
 {
 	close_existing_connections(thread_ctx);
 }
+#endif /* SUPPORT_RECONFIG */
 
 /* Launched in TX thread. */
 static void
@@ -4299,6 +4320,7 @@ reap_terminating_threads_ungracefully(void)
 		return;
 
 	conf.reaping_flags |= REAPING_UNGRACEFUL;
+#ifdef SUPPORT_RECONFIG
 	unsigned thr_idx;
 	for (thr_idx = conf.num_threads - 1;
 	    thr_idx >= conf.num_desired_threads; --thr_idx) {
@@ -4315,6 +4337,7 @@ reap_terminating_threads_ungracefully(void)
 		    !thread_ctx->thread_finished)
 			fiber_sleep(0.001);
 	}
+#endif /* SUPPORT_RECONFIG */
 
 	if (conf.reaping_flags & REAPING_GRACEFUL) {
 		assert(conf.fiber_to_wake_on_reaping_done == NULL);
@@ -4440,6 +4463,7 @@ on_shutdown_for_user(lua_State *L)
 	return on_shutdown_internal(L, false);
 }
 
+#ifdef SUPPORT_RECONFIG
 /* Launched in TX thread. */
 static void
 replace_lua_handlers(lua_State *L)
@@ -4447,6 +4471,7 @@ replace_lua_handlers(lua_State *L)
 	luaL_unref(L, LUA_REGISTRYINDEX, conf.lua_handler_ref);
 	conf.lua_handler_ref = conf.new_lua_handler_ref;
 }
+#endif /* SUPPORT_RECONFIG */
 
 /* Launched in TX thread. */
 static void
@@ -4602,6 +4627,7 @@ Done:
 	return lerr;
 }
 
+#ifdef SUPPORT_RECONFIG
 /* Launched in TX thread. */
 static const char *
 hot_reload_add_threads(unsigned threads)
@@ -4645,6 +4671,7 @@ add_thr_xtm_to_tx_fail:
 
 	return lerr;
 }
+#endif /* SUPPORT_RECONFIG */
 
 /* Launched in TX thread. */
 static int
@@ -4695,6 +4722,7 @@ reaper_fiber_func(va_list ap)
 	}
 }
 
+#ifdef SUPPORT_RECONFIG
 /* Launched in TX thread. */
 static void
 deactivate_reaper_fiber(void)
@@ -4702,7 +4730,9 @@ deactivate_reaper_fiber(void)
 	conf.is_thr_term_timeout_active = false;
 	/* There is no point in awaking it. */
 }
+#endif /* SUPPORT_RECONFIG */
 
+#ifdef SUPPORT_RECONFIG
 /* Launched in TX thread. */
 static void
 hot_reload_remove_threads(unsigned threads)
@@ -4729,6 +4759,7 @@ hot_reload_remove_threads(unsigned threads)
 	assert(conf.reaper_fiber != NULL);
 	fiber_wakeup(conf.reaper_fiber);
 }
+#endif /* SUPPORT_RECONFIG */
 
 /* Launched in TX thread. */
 static void
@@ -4774,11 +4805,15 @@ parse_min_proto_version(const char *min_proto_version_str,
 		    !memcmp(&protos[idx].str, min_proto_version_str,
 		    min_proto_version_len)) {
 			const long min_tls_proto_version = protos[idx].num;
+#ifdef SUPPORT_RECONFIG
 			if (is_reconfig) {
 			       if (conf.min_tls_proto_version !=
 				    min_tls_proto_version)
 					return min_proto_version_reconf;
 			} else
+#else /* SUPPORT_RECONFIG */
+			assert(!is_reconfig);
+#endif /* SUPPORT_RECONFIG */
 				conf.min_tls_proto_version =
 					min_tls_proto_version;
 			return NULL;
@@ -4812,11 +4847,16 @@ get_min_proto_version(lua_State *L, int idx, bool is_reconfig)
 {
 	lua_getfield(L, idx, "min_proto_version");
 	if (is_nil_or_null(L, -1)) {
+#ifdef SUPPORT_RECONFIG
 		if (is_reconfig) {
 			if (is_box_null(L, -1) && conf.min_tls_proto_version !=
 			    DEFAULT_MIN_TLS_PROTO_VERSION_NUM)
 				return min_proto_version_reconf;
-		} else {
+		} else
+#else /* SUPPORT_RECONFIG */
+		assert(!is_reconfig);
+#endif /* SUPPORT_RECONFIG */
+		{
 			conf.min_tls_proto_version =
 				DEFAULT_MIN_TLS_PROTO_VERSION_NUM;
 			fprintf(stderr, "Using default min_proto_version="
@@ -4844,11 +4884,16 @@ get_openssl_security_level(lua_State *L, int idx, bool is_reconfig)
 {
 	lua_getfield(L, idx, "openssl_security_level");
 	if (is_nil_or_null(L, -1)) {
+#ifdef SUPPORT_RECONFIG
 		if (is_reconfig) {
 			if (is_box_null(L, -1) && conf.openssl_security_level !=
 			    DEFAULT_OPENSSL_SECURITY_LEVEL)
 				return openssl_security_level_reconf;
-		} else {
+		} else
+#else /* SUPPORT_RECONFIG */
+		assert(!is_reconfig);
+#endif /* SUPPORT_RECONFIG */
+		{
 			conf.openssl_security_level =
 				DEFAULT_OPENSSL_SECURITY_LEVEL;
 			fprintf(stderr,
@@ -4865,14 +4910,19 @@ get_openssl_security_level(lua_State *L, int idx, bool is_reconfig)
 		return "openssl_security_level is not a number";
 	if (openssl_security_level > 5)
 		return "openssl_security_level is invalid";
+#ifdef SUPPORT_RECONFIG
 	if (is_reconfig) {
 		if (conf.openssl_security_level != openssl_security_level)
 			return openssl_security_level_reconf;
 	} else
+#else /* SUPPORT_RECONFIG */
+	assert(!is_reconfig);
+#endif /* SUPPORT_RECONFIG */
 		conf.openssl_security_level = openssl_security_level;
 	return NULL;
 }
 
+#ifdef SUPPORT_RECONFIG
 /* Launched in TX thread. */
 static const char *
 get_handler_reconfig(lua_State *L, int idx, bool *handler_replaced)
@@ -4894,6 +4944,7 @@ get_handler_reconfig(lua_State *L, int idx, bool *handler_replaced)
 	*handler_replaced = true;
 	return NULL;
 }
+#endif /* SUPPORT_RECONFIG */
 
 /* Launched in TX thread. */
 static const char *
@@ -5054,6 +5105,7 @@ configure_handler_security_listen(lua_State *L, int idx,
 	return NULL;
 }
 
+#ifdef SUPPORT_RECONFIG
 /* Launched in TX thread. */
 static const char *
 reconfig_handler_security_listen_threads(lua_State *L, int idx,
@@ -5090,6 +5142,7 @@ unref_on_reconfig_failure(lua_State *L, bool handler_replaced)
 		return;
 	luaL_unref(L, LUA_REGISTRYINDEX, conf.new_lua_handler_ref);
 }
+#endif /* SUPPORT_RECONFIG */
 
 /* Launched in TX thread. */
 static void
@@ -5192,6 +5245,7 @@ get_use_body_split(lua_State *L, int idx, unsigned shuttle_size,
 	PROCESS_MAX_BODY_LEN(); \
 	/* FIXME: Maybe we need to configure tfo_queues? */
 
+#ifdef SUPPORT_RECONFIG
 /* Launched in TX thread. */
 static int
 reconfigure(lua_State *L)
@@ -5269,6 +5323,7 @@ error_something:
 	assert(lerr != NULL);
 	return luaL_error(L, lerr);
 }
+#endif /* SUPPORT_RECONFIG */
 
 /* Launched in TX thread. */
 static inline void
@@ -5277,7 +5332,10 @@ save_params_to_conf(unsigned shuttle_size, unsigned threads)
 	/* FIXME: Add sanity checks, especially shuttle_size -
 	 * it must >sizeof(shuttle_t) (accounting for Lua payload)
 	 * and aligned. */
-	conf.num_desired_threads = conf.num_threads = threads;
+#ifdef SUPPORT_RECONFIG
+	conf.num_desired_threads =
+#endif /* SUPPORT_RECONFIG */
+	conf.num_threads = threads;
 	conf.shuttle_size = shuttle_size;
 
 	/* FIXME: Can differ from shuttle_size. */
@@ -5315,7 +5373,14 @@ cfg(lua_State *L)
 		goto error_something;
 	}
 	if (conf.configured)
+#ifdef SUPPORT_RECONFIG
 		return reconfigure(L);
+#else /* SUPPORT_RECONFIG */
+	{
+		lerr = "Server is already launched";
+		goto error_something;
+	}
+#endif /* SUPPORT_RECONFIG */
 
 	const path_desc_t *path_descs = NULL;
 	if ((lerr = get_c_handlers(L, LUA_STACK_IDX_TABLE, &path_descs)) !=
@@ -5448,6 +5513,7 @@ get_shuttle_size(void)
 	return conf.shuttle_size;
 }
 
+#ifdef SUPPORT_RECONFIG
 /* Launched in TX thread. */
 static int
 force_decrease_threads(lua_State *L)
@@ -5469,6 +5535,7 @@ force_decrease_threads(lua_State *L)
 	reap_terminating_threads_ungracefully();
 	return 0;
 }
+#endif /* SUPPORT_RECONFIG */
 
 /* Launched in TX thread. */
 static int
@@ -5615,7 +5682,9 @@ get_router_data(shuttle_t *shuttle, unsigned *max_len)
 static const struct luaL_Reg mylib[] = {
 	{"cfg", cfg},
 	{"shutdown", on_shutdown_for_user},
+#ifdef SUPPORT_RECONFIG
 	{"force_decrease_threads", force_decrease_threads},
+#endif /* SUPPORT_RECONFIG */
 	{"_cfg_debug", cfg_debug},
 	{"_debug_wait_process", debug_wait_process},
 	{NULL, NULL}

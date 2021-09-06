@@ -141,6 +141,8 @@ typedef unsigned shuttle_count_t;
 
 #define SUPPORT_SHUTDOWN
 //#undef SUPPORT_SHUTDOWN
+#define SUPPORT_THR_TERMINATION
+//#undef SUPPORT_THR_TERMINATION
 #define SUPPORT_GRACEFUL_THR_TERMINATION
 //#undef SUPPORT_GRACEFUL_THR_TERMINATION
 #define SUPPORT_RECONFIG
@@ -159,6 +161,12 @@ typedef unsigned shuttle_count_t;
 #  error "SUPPORT_RECONFIG requires SUPPORT_SHUTDOWN"
 # endif /* SUPPORT_SHUTDOWN */
 #endif /* SUPPORT_RECONFIG */
+
+#ifdef SUPPORT_SHUTDOWN
+# ifndef SUPPORT_THR_TERMINATION
+#  error "SUPPORT_SHUTDOWN requires SUPPORT_THR_TERMINATION"
+# endif /* SUPPORT_THR_TERMINATION */
+#endif /* SUPPORT_SHUTDOWN */
 
 #define SUPPORT_WEBSOCKETS
 //#undef SUPPORT_WEBSOCKETS
@@ -203,12 +211,16 @@ typedef struct {
 #ifdef USE_LIBUV
 	uv_loop_t loop;
 	uv_poll_t uv_poll_from_tx;
+#ifdef SUPPORT_THR_TERMINATION
 	uv_async_t terminate_notifier;
+#endif /* SUPPORT_THR_TERMINATION */
 #else /* USE_LIBUV */
+#ifdef SUPPORT_THR_TERMINATION
 	struct {
 		int write_fd;
 		h2o_socket_t *read_socket; /* pipe underneath. */
 	} terminate_notifier;
+#endif /* SUPPORT_THR_TERMINATION */
 #endif /* USE_LIBUV */
 #ifdef USE_SHUTTLES_MUTEX
 	pthread_mutex_t shuttles_mutex;
@@ -218,10 +230,13 @@ typedef struct {
 	shuttle_count_t shuttle_counter;
 	unsigned num_connections;
 	unsigned idx;
+#ifdef SUPPORT_THR_TERMINATION
 	unsigned active_lua_fibers;
+#endif /* SUPPORT_THR_TERMINATION */
 	unsigned listeners_created;
 	pthread_t tid;
 	bool push_from_tx_is_sleeping;
+#ifdef SUPPORT_THR_TERMINATION
 	bool shutdown_req_sent; /* TX -> HTTP(S) server thread. */
 	bool shutdown_requested; /* Someone asked us to shut down thread. */
 #ifdef SUPPORT_GRACEFUL_THR_TERMINATION
@@ -233,6 +248,7 @@ typedef struct {
 	bool tx_fiber_should_exit;
 	bool tx_fiber_finished;
 	volatile bool thread_finished;
+#endif /* SUPPORT_THR_TERMINATION */
 #ifndef USE_LIBUV
 	volatile bool queue_from_tx_fd_consumed;
 #endif /* USE_LIBUV */
@@ -527,10 +543,14 @@ static void fill_http_headers(lua_State *L, lua_handler_state_t *state,
 	int param_lua_idx);
 
 #ifndef USE_LIBUV
+#ifdef SUPPORT_THR_TERMINATION
 static void on_terminate_notifier_read(h2o_socket_t *sock, const char *err);
+#endif /* SUPPORT_THR_TERMINATION */
 #endif /* USE_LIBUV */
+#ifdef SUPPORT_THR_TERMINATION
 static void init_terminate_notifier(thread_ctx_t *thread_ctx);
 static void deinit_terminate_notifier(thread_ctx_t *thread_ctx);
+#endif /* SUPPORT_THR_TERMINATION */
 #ifdef SUPPORT_SHUTDOWN
 static int on_shutdown_callback(lua_State *L);
 #endif /* SUPPORT_SHUTDOWN */
@@ -2189,13 +2209,16 @@ push_query(lua_State *L, lua_handler_state_t *state)
 	lua_setfield(L, -2, "query");
 }
 
+#ifdef SUPPORT_THR_TERMINATION
 /* Launched in TX thread. */
 static void
 tell_tx_fiber_to_exit(thread_ctx_t *thread_ctx)
 {
 	thread_ctx->tx_fiber_should_exit = true;
 }
+#endif /* SUPPORT_THR_TERMINATION */
 
+#ifdef SUPPORT_THR_TERMINATION
 /* Launched in HTTP server thread. */
 static void
 tx_done(thread_ctx_t *thread_ctx)
@@ -2210,13 +2233,16 @@ tx_done(thread_ctx_t *thread_ctx)
 #endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 	call_in_tx_with_thread_ctx(tell_tx_fiber_to_exit, thread_ctx);
 }
+#endif /* SUPPORT_THR_TERMINATION */
 
+#ifdef SUPPORT_THR_TERMINATION
 /* Launched in TX thread. */
 static inline void
 call_in_http_thr_tx_done(thread_ctx_t *thread_ctx)
 {
 	call_in_http_thr_with_thread_ctx(tx_done, thread_ctx);
 }
+#endif /* SUPPORT_THR_TERMINATION */
 
 /* Launched in TX thread. */
 static void
@@ -2363,7 +2389,9 @@ lua_fiber_func(va_list ap)
 
 	lua_handler_state_t *const state =
 		(lua_handler_state_t *)&shuttle->payload;
+#ifdef SUPPORT_THR_TERMINATION
 	thread_ctx_t *const thread_ctx = shuttle->thread_ctx;
+#endif /* SUPPORT_THR_TERMINATION */
 
 	/* User handler function, written in Lua. */
 	lua_rawgeti(L, LUA_REGISTRYINDEX, conf.lua_handler_ref);
@@ -2463,9 +2491,11 @@ lua_fiber_func(va_list ap)
 
 Done:
 	luaL_unref(luaT_state(), LUA_REGISTRYINDEX, lua_state_ref);
+#ifdef SUPPORT_THR_TERMINATION
 	if (--thread_ctx->active_lua_fibers == 0 &&
 	    thread_ctx->should_notify_tx_done)
 		call_in_http_thr_tx_done(thread_ctx);
+#endif /* SUPPORT_THR_TERMINATION */
 
 	return 0;
 }
@@ -2507,7 +2537,9 @@ process_lua_req_in_tx(shuttle_t *shuttle)
 #ifdef SUPPORT_WEBSOCKETS
 	state->tx_fiber = fiber_self();
 #endif /* SUPPORT_WEBSOCKETS */
+#ifdef SUPPORT_THR_TERMINATION
 	++shuttle->thread_ctx->active_lua_fibers;
+#endif /* SUPPORT_THR_TERMINATION */
 	fiber_start(state->fiber, shuttle, new_L);
 }
 #undef RETURN_WITH_ERROR
@@ -3217,6 +3249,7 @@ deinit_listener_cfgs(void)
 	}
 }
 
+#ifdef SUPPORT_THR_TERMINATION
 /* Launched in HTTP server thread. */
 static void
 listening_sockets_stop_read(thread_ctx_t *thread_ctx)
@@ -3236,6 +3269,7 @@ listening_sockets_stop_read(thread_ctx_t *thread_ctx)
 	thread_ctx->listeners_created = 0;
 #endif /* USE_LIBUV */
 }
+#endif /* SUPPORT_THR_TERMINATION */
 
 /* Launched in HTTP server thread. */
 static void
@@ -3861,6 +3895,7 @@ reset_thread_ctx(unsigned idx)
 
 	thread_ctx->call_from_tx_waiter = NULL;
 	thread_ctx->push_from_tx_is_sleeping = false;
+#ifdef SUPPORT_THR_TERMINATION
 	thread_ctx->should_notify_tx_done = false;
 	thread_ctx->tx_fiber_should_exit = false;
 	thread_ctx->shutdown_req_sent = false;
@@ -3871,6 +3906,7 @@ reset_thread_ctx(unsigned idx)
 	thread_ctx->tx_done_notification_received = false;
 	thread_ctx->tx_fiber_finished = false;
 	thread_ctx->thread_finished = false;
+#endif /* SUPPORT_THR_TERMINATION */
 #ifndef USE_LIBUV
 	thread_ctx->queue_from_tx_fd_consumed = false;
 #endif /* USE_LIBUV */
@@ -3994,6 +4030,7 @@ mutex_init_failed:
 	return false;
 }
 
+#ifdef SUPPORT_THR_TERMINATION
 /* Launched in TX thread. */
 static void
 finish_processing_lua_reqs_in_tx(thread_ctx_t *thread_ctx)
@@ -4003,7 +4040,9 @@ finish_processing_lua_reqs_in_tx(thread_ctx_t *thread_ctx)
 	else
 		thread_ctx->should_notify_tx_done = true;
 }
+#endif /* SUPPORT_THR_TERMINATION */
 
+#ifdef SUPPORT_THR_TERMINATION
 /* Launched in HTTP(S) server thread. */
 static inline void
 call_in_tx_finish_processing_lua_reqs(thread_ctx_t *thread_ctx)
@@ -4011,7 +4050,9 @@ call_in_tx_finish_processing_lua_reqs(thread_ctx_t *thread_ctx)
 	call_in_tx_with_thread_ctx(finish_processing_lua_reqs_in_tx,
 		thread_ctx);
 }
+#endif /* SUPPORT_THR_TERMINATION */
 
+#ifdef SUPPORT_THR_TERMINATION
 /* Launched in HTTP server thread. */
 static inline void
 tell_close_connection(our_sock_t *item)
@@ -4028,7 +4069,9 @@ tell_close_connection(our_sock_t *item)
 #endif /* USE_LIBUV */
 	h2o_close_working_socket(sock);
 }
+#endif /* SUPPORT_THR_TERMINATION */
 
+#ifdef SUPPORT_THR_TERMINATION
 /* Launched in HTTP server thread. */
 static void
 close_existing_connections(thread_ctx_t *thread_ctx)
@@ -4043,7 +4086,9 @@ close_existing_connections(thread_ctx_t *thread_ctx)
 		item = next;
 	}
 }
+#endif /* SUPPORT_THR_TERMINATION */
 
+#ifdef SUPPORT_THR_TERMINATION
 /* Launched in HTTP server thread. */
 static void
 prepare_worker_for_shutdown(thread_ctx_t *thread_ctx
@@ -4071,7 +4116,9 @@ prepare_worker_for_shutdown(thread_ctx_t *thread_ctx
 		thread_ctx->idx);
 	call_in_tx_finish_processing_lua_reqs(thread_ctx);
 }
+#endif /* SUPPORT_THR_TERMINATION */
 
+#ifdef SUPPORT_THR_TERMINATION
 /* Launched in HTTP server thread. */
 static void
 handle_worker_shutdown(thread_ctx_t *thread_ctx
@@ -4105,6 +4152,7 @@ handle_worker_shutdown(thread_ctx_t *thread_ctx
 done:
 	h2o_make_shutdown_ungraceful(&thread_ctx->ctx);
 }
+#endif /* SUPPORT_THR_TERMINATION */
 
 /* This is HTTP server thread main function. */
 static void *
@@ -4124,7 +4172,9 @@ worker_func(void *param)
 		&thread_ctx->globalconf);
 #endif /* INIT_CTX_IN_HTTP_THREAD */
 #endif /* USE_LIBUV */
+#ifdef SUPPORT_THR_TERMINATION
 	init_terminate_notifier(thread_ctx);
+#endif /* SUPPORT_THR_TERMINATION */
 
 	__sync_synchronize();
 	httpng_sem_post(&thread_ctx->can_be_terminated);
@@ -4166,9 +4216,14 @@ worker_func(void *param)
 	thread_ctx->queue_from_tx_fd_consumed = true;
 	listening_sockets_start_read(thread_ctx);
 	h2o_evloop_t *loop = thread_ctx->ctx.loop;
+#ifdef SUPPORT_THR_TERMINATION
 	while (!thread_ctx->shutdown_requested)
+#else /* SUPPORT_THR_TERMINATION */
+	while (true)
+#endif /* SUPPORT_THR_TERMINATION */
 		h2o_evloop_run(loop, INT32_MAX);
 
+#ifdef SUPPORT_THR_TERMINATION
 	listening_sockets_stop_read(thread_ctx);
 	close_listening_sockets(thread_ctx);
 
@@ -4190,8 +4245,10 @@ worker_func(void *param)
 
 	h2o_socket_read_stop(thread_ctx->sock_from_tx);
 	h2o_socket_close(thread_ctx->sock_from_tx);
+#endif /* SUPPORT_THR_TERMINATION */
 #endif /* USE_LIBUV */
 
+#ifdef SUPPORT_THR_TERMINATION
 #ifdef INIT_CTX_IN_HTTP_THREAD
 	h2o_context_dispose(&thread_ctx->ctx);
 #endif /* INIT_CTX_IN_HTTP_THREAD */
@@ -4201,6 +4258,7 @@ worker_func(void *param)
 
 	thread_ctx->thread_finished = true;
 	__sync_synchronize();
+#endif /* SUPPORT_THR_TERMINATION */
 	return NULL;
 }
 
@@ -4244,12 +4302,17 @@ tx_fiber_func(va_list ap)
 	thread_ctx_t *const thread_ctx = &conf.thread_ctxs[fiber_idx];
 	struct xtm_queue *const queue_to_tx = thread_ctx->queue_to_tx;
 	const int pipe_fd = xtm_queue_consumer_fd(queue_to_tx);
+#ifdef SUPPORT_THR_TERMINATION
 	/* thread_ctx->tx_fiber_should_exit is read non-atomically for
 	 * performance reasons so it should be changed in this thread by
 	 * queueing corresponding function call. */
 	while (!thread_ctx->tx_fiber_should_exit)
+#else /* SUPPORT_THR_TERMINATION */
+	while (true)
+#endif /* SUPPORT_THR_TERMINATION */
 		if (coio_wait(pipe_fd, COIO_READ, DBL_MAX) & COIO_READ)
 			invoke_all_in_tx(queue_to_tx);
+#ifdef SUPPORT_THR_TERMINATION
 	thread_ctx->tx_fiber_finished = true;
 	if (thread_ctx->fiber_to_wake_on_shutdown != NULL) {
 		struct fiber *const fiber =
@@ -4257,9 +4320,11 @@ tx_fiber_func(va_list ap)
 		thread_ctx->fiber_to_wake_on_shutdown = NULL;
 		fiber_wakeup(fiber);
 	}
+#endif /* SUPPORT_THR_TERMINATION */
 	return 0;
 }
 
+#ifdef SUPPORT_THR_TERMINATION
 /* Launched in HTTP server thread. */
 static void
 on_termination_notification(void *param)
@@ -4271,8 +4336,10 @@ on_termination_notification(void *param)
 	uv_stop(&thread_ctx->loop);
 #endif /* USE_LIBUV */
 }
+#endif /* SUPPORT_THR_TERMINATION */
 
 #ifndef USE_LIBUV
+#ifdef SUPPORT_THR_TERMINATION
 /* Launched in HTTP server thread. */
 static void
 on_terminate_notifier_read(h2o_socket_t *sock, const char *err)
@@ -4286,8 +4353,10 @@ on_terminate_notifier_read(h2o_socket_t *sock, const char *err)
 	thread_ctx_t *const thread_ctx = get_curr_thread_ctx();
 	on_termination_notification(&thread_ctx->terminate_notifier);
 }
+#endif /* SUPPORT_THR_TERMINATION */
 #endif /* USE_LIBUV */
 
+#ifdef SUPPORT_THR_TERMINATION
 /* Launched in HTTP server thread. */
 static void
 init_terminate_notifier(thread_ctx_t *thread_ctx)
@@ -4314,7 +4383,9 @@ init_terminate_notifier(thread_ctx_t *thread_ctx)
 		on_terminate_notifier_read);
 #endif /* USE_LIBUV */
 }
+#endif /* SUPPORT_THR_TERMINATION */
 
+#ifdef SUPPORT_THR_TERMINATION
 /* Launched in HTTP server thread. */
 static void
 deinit_terminate_notifier(thread_ctx_t *thread_ctx)
@@ -4329,7 +4400,9 @@ deinit_terminate_notifier(thread_ctx_t *thread_ctx)
 	close(thread_ctx->terminate_notifier.write_fd);
 #endif /* USE_LIBUV */
 }
+#endif /* SUPPORT_THR_TERMINATION */
 
+#ifdef SUPPORT_THR_TERMINATION
 /* Launched in TX thread. */
 static void
 tell_thread_to_terminate_internal(thread_ctx_t *thread_ctx)
@@ -4346,7 +4419,9 @@ tell_thread_to_terminate_internal(thread_ctx_t *thread_ctx)
 		;
 #endif /* USE_LIBUV */
 }
+#endif /* SUPPORT_THR_TERMINATION */
 
+#ifdef SUPPORT_THR_TERMINATION
 /* Launched in TX thread. */
 static inline void
 tell_thread_to_terminate_immediately(thread_ctx_t *thread_ctx)
@@ -4359,6 +4434,7 @@ tell_thread_to_terminate_immediately(thread_ctx_t *thread_ctx)
 	 * Thread may already be terminating gracefully. */
 	tell_thread_to_terminate_internal(thread_ctx);
 }
+#endif /* SUPPORT_THR_TERMINATION */
 
 #ifdef SUPPORT_RECONFIG
 /* Launched in TX thread. */
@@ -4428,6 +4504,7 @@ setup_on_shutdown(lua_State *L, bool setup, bool called_from_callback)
 }
 #endif /* SUPPORT_SHUTDOWN */
 
+#ifdef SUPPORT_THR_TERMINATION
 /* Launched in TX thread. */
 static void
 wait_for_exiting_tx_fiber(thread_ctx_t *thread_ctx)
@@ -4440,6 +4517,7 @@ wait_for_exiting_tx_fiber(thread_ctx_t *thread_ctx)
 	if (next_fiber_to_wake != NULL)
 		fiber_wakeup(next_fiber_to_wake);
 }
+#endif /* SUPPORT_THR_TERMINATION */
 
 #ifdef SUPPORT_SHUTDOWN
 /* Launched in TX thread. */
@@ -4707,7 +4785,9 @@ prepare_thread_ctx(unsigned thread_idx)
 	thread_ctx->idx = thread_idx;
 	thread_ctx->listeners_created = 0;
 	thread_ctx->num_connections = 0;
+#ifdef SUPPORT_THR_TERMINATION
 	thread_ctx->active_lua_fibers = 0;
+#endif /* SUPPORT_THR_TERMINATION*/
 #ifdef SUPPORT_SHUTDOWN
 	thread_ctx->fiber_to_wake_on_shutdown = NULL;
 #endif /* SUPPORT_SHUTDOWN */
@@ -4750,6 +4830,7 @@ Done:
 static void
 terminate_tx_fibers(unsigned start_idx, unsigned start_idx_plus_len)
 {
+#ifdef SUPPORT_THR_TERMINATION
 	unsigned idx;
 	for (idx = start_idx; idx < start_idx_plus_len; ++idx) {
 		struct fiber *const fiber = conf.tx_fiber_ptrs[idx];
@@ -4779,6 +4860,11 @@ terminate_tx_fibers(unsigned start_idx, unsigned start_idx_plus_len)
 		fiber_join(*fiber);
 		*fiber = NULL;
 	}
+#else /* SUPPORT_THR_TERMINATION */
+	/* Stopgap until next PR. */
+	fprintf(stderr, "fibers termination not implemented\n");
+	abort();
+#endif /* SUPPORT_THR_TERMINATION */
 }
 
 /* Launched in TX thread. */
@@ -4808,12 +4894,18 @@ start_tx_fibers(unsigned *fiber_idx_ptr, unsigned start_idx_plus_len)
 static void
 terminate_and_join_threads(unsigned start_idx, unsigned start_idx_plus_len)
 {
+#ifdef SUPPORT_THR_TERMINATION
 	unsigned idx;
 	for (idx = start_idx; idx < start_idx_plus_len; ++idx)
 		tell_thread_to_terminate_immediately(&conf.thread_ctxs[idx]);
 
 	for (idx = start_idx; idx < start_idx_plus_len; ++idx)
 		pthread_join(conf.thread_ctxs[idx].tid, NULL);
+#else /* SUPPORT_THR_TERMINATION */
+	/* Stopgap until next PR. */
+	fprintf(stderr, "http server threads termination not implemented\n");
+	abort();
+#endif /* SUPPORT_THR_TERMINATION */
 }
 
 /* Launched in TX thread. */

@@ -454,10 +454,10 @@ typedef struct {
 	} un; /* Must be last member of struct. */
 } lua_handler_state_t;
 
-#ifdef SUPPORT_WEBSOCKETS
 typedef void lua_handler_state_func_t(lua_handler_state_t *);
-#endif /* SUPPORT_WEBSOCKETS */
+#ifdef SUPPORT_WEBSOCKETS
 typedef void recv_data_func_t(recv_data_t *);
+#endif /* SUPPORT_WEBSOCKETS */
 typedef void thread_ctx_func_t(thread_ctx_t *);
 typedef int lua_handler_func_t(lua_h2o_handler_t *, h2o_req_t *);
 
@@ -1539,12 +1539,14 @@ cancel_processing_lua_websocket_in_tx(lua_handler_state_t *state)
 }
 #endif /* SUPPORT_WEBSOCKETS */
 
+#ifdef SUPPORT_WEBSOCKETS
 /* Can be launched in TX thread or HTTP server thread. */
 static inline char *
 get_websocket_recv_location(recv_data_t *const recv_data)
 {
 	return recv_data->payload;
 }
+#endif /* SUPPORT_WEBSOCKETS */
 
 /* Launched in TX thread. */
 static inline const char *
@@ -5785,16 +5787,20 @@ save_params_to_conf(unsigned shuttle_size, unsigned threads)
 	conf.num_threads = threads;
 	conf.shuttle_size = shuttle_size;
 
+#ifdef SUPPORT_WEBSOCKETS
 	/* FIXME: Can differ from shuttle_size. */
 	conf.recv_data_size = shuttle_size;
+#endif /* SUPPORT_WEBSOCKETS */
 
 	conf.max_headers_lua = (conf.shuttle_size - sizeof(shuttle_t) -
 		offsetof(lua_handler_state_t, un.resp.first.headers)) /
 		sizeof(http_header_entry_t);
 	conf.max_path_len_lua = conf.shuttle_size - sizeof(shuttle_t) -
 		offsetof(lua_handler_state_t, un.req.buffer);
+#ifdef SUPPORT_WEBSOCKETS
 	conf.max_recv_bytes_lua_websocket = conf.recv_data_size -
 		(uintptr_t)get_websocket_recv_location(NULL);
+#endif /* SUPPORT_WEBSOCKETS */
 }
 
 /* Launched in TX thread. */

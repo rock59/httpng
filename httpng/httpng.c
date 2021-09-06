@@ -91,7 +91,12 @@ typedef void (fill_router_data_t)(struct lua_State *L, const char *path,
 
 #define LUA_QUERY_NONE UINT_MAX
 
+#define SUPPORT_WEBSOCKETS
+//#undef SUPPORT_WEBSOCKETS
+
+#ifdef SUPPORT_WEBSOCKETS
 #define WS_CLIENT_KEY_LEN 24 /* Hardcoded in H2O. */
+#endif /* SUPPORT_WEBSOCKETS */
 
 #define DEFAULT_threads 1
 #define DEFAULT_max_conn_per_thread (256 * 1024)
@@ -123,10 +128,13 @@ typedef unsigned shuttle_count_t;
 #define TLS1_2_STR "tls1.2"
 #define TLS1_3_STR "tls1.3"
 
-#define GENERATION_INCREMENT 1
+#define SUPPORT_SHUTDOWN
+//#undef SUPPORT_SHUTDOWN
 
+#ifdef SUPPORT_SHUTDOWN
 #define REAPING_GRACEFUL (1 << 0)
 #define REAPING_UNGRACEFUL (1 << 1)
+#endif /* SUPPORT_SHUTDOWN */
 
 #define my_container_of(ptr, type, member) ({ \
 	const typeof( ((type *)0)->member  ) *__mptr = \
@@ -139,8 +147,6 @@ typedef unsigned shuttle_count_t;
 
 #define STR_PORT_LENGTH 8
 
-#define SUPPORT_SHUTDOWN
-//#undef SUPPORT_SHUTDOWN
 #define SUPPORT_THR_TERMINATION
 //#undef SUPPORT_THR_TERMINATION
 #define SUPPORT_GRACEFUL_THR_TERMINATION
@@ -167,9 +173,6 @@ typedef unsigned shuttle_count_t;
 #  error "SUPPORT_SHUTDOWN requires SUPPORT_THR_TERMINATION"
 # endif /* SUPPORT_THR_TERMINATION */
 #endif /* SUPPORT_SHUTDOWN */
-
-#define SUPPORT_WEBSOCKETS
-//#undef SUPPORT_WEBSOCKETS
 
 #define SUPPORT_C_HANDLERS
 #undef SUPPORT_C_HANDLERS
@@ -201,7 +204,9 @@ typedef struct {
 	struct listener_ctx *listener_ctxs;
 	struct xtm_queue *queue_to_tx;
 	struct xtm_queue *queue_from_tx;
+#ifdef SUPPORT_THR_TERMINATION
 	struct fiber *fiber_to_wake_on_shutdown;
+#endif /* SUPPORT_THR_TERMINATION */
 	waiter_t *call_from_tx_waiter;
 	h2o_hostconf_t *hostconf;
 #ifndef USE_LIBUV
@@ -226,7 +231,9 @@ typedef struct {
 	pthread_mutex_t shuttles_mutex;
 #endif /* USE_SHUTTLES_MUTEX */
 	h2o_linklist_t accepted_sockets;
+#ifdef SUPPORT_THR_TERMINATION
 	httpng_sem_t can_be_terminated;
+#endif /* SUPPORT_THR_TERMINATION */
 	shuttle_count_t shuttle_counter;
 	unsigned num_connections;
 	unsigned idx;
@@ -287,9 +294,9 @@ typedef struct anchor {
 /* Written directly into h2o_create_handler()->on_req. */
 typedef int (*req_handler_t)(h2o_handler_t *, h2o_req_t *);
 
+#ifdef SUPPORT_C_HANDLERS
 typedef int (*init_userdata_in_tx_t)(void *); /* Returns 0 on success. */
 
-#ifdef SUPPORT_C_HANDLERS
 typedef struct {
 	const char *path;
 	req_handler_t handler;
@@ -314,6 +321,7 @@ typedef struct {
 	bool is_opened;
 } listener_cfg_t;
 
+#ifdef SUPPORT_LISTEN
 typedef struct st_sni_map {
 	SSL_CTX **ssl_ctxs; /* Set of all ctxs for listener */
 	size_t ssl_ctxs_capacity;
@@ -327,12 +335,15 @@ typedef struct st_sni_map {
 	size_t sni_fields_capacity;
 } sni_map_t;
 typedef sni_map_t servername_callback_arg_t;
+#endif /* SUPPORT_LISTEN */
 
+#ifdef SUPPORT_WEBSOCKETS
 typedef struct {
 	shuttle_t *parent_shuttle;
 	unsigned payload_bytes;
 	char payload[];
 } recv_data_t;
+#endif /* SUPPORT_WEBSOCKETS */
 
 typedef struct {
 	const char *name;
@@ -380,7 +391,9 @@ typedef struct {
 	unsigned num_headers;
 	unsigned body_len;
 	unsigned char method_len;
+#ifdef SUPPORT_WEBSOCKETS
 	unsigned char ws_client_key_len;
+#endif /* SUPPORT_WEBSOCKETS */
 	unsigned char version_major;
 	unsigned char version_minor;
 	bool is_encrypted;
@@ -393,8 +406,8 @@ typedef struct {
 
 typedef struct {
 	struct fiber *fiber;
-	struct fiber *recv_fiber; /* Fiber for WebSocket recv handler. */
 #ifdef SUPPORT_WEBSOCKETS
+	struct fiber *recv_fiber; /* Fiber for WebSocket recv handler. */
 	h2o_websocket_conn_t *ws_conn;
 	recv_data_t *recv_data; /* For WebSocket recv. */
 	struct fiber *tx_fiber; /* The one which services requests
@@ -404,8 +417,10 @@ typedef struct {
 	struct sockaddr_storage peer;
 	struct sockaddr_storage ouraddr;
 	int lua_state_ref;
+#ifdef SUPPORT_WEBSOCKETS
 	int lua_recv_handler_ref;
 	int lua_recv_state_ref;
+#endif /* SUPPORT_WEBSOCKETS */
 	bool fiber_done;
 	bool sent_something;
 	bool cancelled; /* Changed by TX thread. */
@@ -417,10 +432,10 @@ typedef struct {
 	bool upgraded_to_websocket;
 #endif /* SUPPORT_WEBSOCKETS */
 
+#ifdef SUPPORT_WEBSOCKETS
 	bool is_recv_fiber_waiting;
 	bool is_recv_fiber_cancelled;
 	bool in_recv_handler;
-#ifdef SUPPORT_WEBSOCKETS
 	char ws_client_key[WS_CLIENT_KEY_LEN];
 #endif /* SUPPORT_WEBSOCKETS */
 	union { /* Can use struct instead when debugging. */
@@ -429,7 +444,9 @@ typedef struct {
 	} un; /* Must be last member of struct. */
 } lua_handler_state_t;
 
+#ifdef SUPPORT_WEBSOCKETS
 typedef void lua_handler_state_func_t(lua_handler_state_t *);
+#endif /* SUPPORT_WEBSOCKETS */
 typedef void recv_data_func_t(recv_data_t *);
 typedef void thread_ctx_func_t(thread_ctx_t *);
 typedef int lua_handler_func_t(lua_h2o_handler_t *, h2o_req_t *);
@@ -458,7 +475,9 @@ static struct {
 	long min_tls_proto_version;
 	shuttle_count_t max_shuttles_per_thread;
 	unsigned shuttle_size;
+#ifdef SUPPORT_WEBSOCKETS
 	unsigned recv_data_size;
+#endif /* SUPPORT_WEBSOCKETS */
 	unsigned num_listeners;
 #ifndef USE_LIBUV
 	unsigned num_accepts;
@@ -470,15 +489,21 @@ static struct {
 	unsigned num_threads;
 	unsigned max_headers_lua;
 	unsigned max_path_len_lua;
+#ifdef SUPPORT_WEBSOCKETS
 	unsigned max_recv_bytes_lua_websocket;
+#endif /* SUPPORT_WEBSOCKETS */
 	int lua_handler_ref;
 #ifdef SUPPORT_RECONFIG
 	int new_lua_handler_ref;
 #endif /* SUPPORT_RECONFIG */
 	int router_ref;
 	int tfo_queues;
+#ifdef SUPPORT_SHUTDOWN
 	int on_shutdown_ref;
+#endif /* SUPPORT_SHUTDOWN */
+#ifdef SUPPORT_SHUTDOWN
 	unsigned char reaping_flags;
+#endif /* SUPPORT_SHUTDOWN */
 #ifdef SUPPORT_SPLITTING_LARGE_BODY
 	bool use_body_split;
 #endif /* SUPPORT_SPLITTING_LARGE_BODY */
@@ -501,7 +526,9 @@ static struct {
 #endif /* SUPPORT_SHUTDOWN */
 } conf = {
 	.tfo_queues = H2O_DEFAULT_LENGTH_TCP_FASTOPEN_QUEUE,
+#ifdef SUPPORT_SHUTDOWN
 	.on_shutdown_ref = LUA_REFNIL,
+#endif /* SUPPORT_SHUTDOWN */
 	.max_shuttles_per_thread = DEFAULT_max_shuttles_per_thread,
 };
 
@@ -2433,8 +2460,10 @@ lua_fiber_func(va_list ap)
 	lua_pushlstring(L, state->un.req.method,
 		state->un.req.method_len);
 	lua_setfield(L, -2, "method");
+#ifdef SUPPORT_WEBSOCKETS
 	lua_pushboolean(L, !!state->un.req.ws_client_key_len);
 	lua_setfield(L, -2, "is_websocket");
+#endif /* SUPPORT_WEBSOCKETS */
 	lua_pushlightuserdata(L, shuttle);
 	lua_setfield(L, -2, shuttle_field_name);
 	push_addr_table(L, state, "peer", offsetof(lua_handler_state_t, peer));
@@ -4197,7 +4226,9 @@ worker_func(void *param)
 #endif /* SUPPORT_THR_TERMINATION */
 
 	__sync_synchronize();
+#ifdef SUPPORT_THR_TERMINATION
 	httpng_sem_post(&thread_ctx->can_be_terminated);
+#endif /* SUPPORT_THR_TERMINATION */
 #ifdef USE_LIBUV
 #error "multilisten code doesn't support Libuv now"
 	/* Process incoming connections/data and requests
@@ -4430,7 +4461,9 @@ tell_thread_to_terminate_internal(thread_ctx_t *thread_ctx)
 	if (thread_ctx->shutdown_req_sent)
 		return;
 	thread_ctx->shutdown_req_sent = true;
+#ifdef SUPPORT_THR_TERMINATION
 	httpng_sem_wait(&thread_ctx->can_be_terminated);
+#endif /* SUPPORT_THR_TERMINATION */
 #ifdef USE_LIBUV
 	uv_async_send(&thread_ctx->terminate_notifier);
 #else /* USE_LIBUV */
@@ -4832,7 +4865,9 @@ start_worker_threads(unsigned *thr_launch_idx_ptr,
 	for (; thr_launch_idx < desired_thread_count; ++thr_launch_idx) {
 		thread_ctx_t *const thread_ctx =
 			&conf.thread_ctxs[thr_launch_idx];
+#ifdef SUPPORT_THR_TERMINATION
 		httpng_sem_init(&thread_ctx->can_be_terminated, 0);
+#endif /* SUPPORT_THR_TERMINATION */
 		if (pthread_create(&thread_ctx->tid,
 		    NULL, worker_func, (void *)(uintptr_t)thr_launch_idx)) {
 			lerr = "Failed to launch worker threads";

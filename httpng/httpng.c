@@ -180,6 +180,9 @@ typedef unsigned shuttle_count_t;
 #define SUPPORT_REQ_INFO
 //#undef SUPPORT_REQ_INFO
 
+#define SUPPORT_ROUTER
+//#undef SUPPORT_ROUTER
+
 struct listener_ctx;
 
 typedef struct {
@@ -503,7 +506,9 @@ static struct {
 #ifdef SUPPORT_RECONFIG
 	int new_lua_handler_ref;
 #endif /* SUPPORT_RECONFIG */
+#ifdef SUPPORT_ROUTER
 	int router_ref;
+#endif /* SUPPORT_ROUTER */
 	int tfo_queues;
 #ifdef SUPPORT_SHUTDOWN
 	int on_shutdown_ref;
@@ -2484,10 +2489,12 @@ lua_fiber_func(va_list ap)
 		lua_setfield(L, -2, "https");
 	}
 #endif /* SUPPORT_REQ_INFO */
+#ifdef SUPPORT_ROUTER
 	if (conf.router_ref != LUA_REFNIL) {
 		lua_rawgeti(L, LUA_REGISTRYINDEX, conf.router_ref);
 		lua_setfield(L, -2, "_used_router");
 	}
+#endif /* SUPPORT_ROUTER */
 
 	const int lua_state_ref = state->lua_state_ref;
 	if (fill_received_headers_and_body(L, shuttle)) {
@@ -2854,7 +2861,9 @@ register_complex_handler_part_two(h2o_hostconf_t *hostconf,
 		h2o_create_handler(pathconf, sizeof(*handler));
 	handler->super.on_req =
 		(int (*)(h2o_handler_t *, h2o_req_t *))c_handler;
+#ifdef SUPPORT_ROUTER
 	conf.router_ref = router_ref;
+#endif /* SUPPORT_ROUTER */
 	conf.lua_handler = handler;
 	return pathconf;
 }
@@ -2867,6 +2876,7 @@ register_lua_handler_part_two(h2o_hostconf_t *hostconf)
 		NULL, LUA_REFNIL);
 }
 
+#ifdef SUPPORT_ROUTER
 /* Launched in TX thread. */
 static h2o_pathconf_t *
 register_router_part_two(h2o_hostconf_t *hostconf,
@@ -2876,6 +2886,7 @@ register_router_part_two(h2o_hostconf_t *hostconf,
 	return register_complex_handler_part_two(hostconf, handler,
 		handler_param, router_ref);
 }
+#endif /* SUPPORT_ROUTER */
 
 /* Launched in TX thread. */
 static void
@@ -2888,6 +2899,7 @@ register_lua_handler(int lua_handler_ref)
 			.hostconf);
 }
 
+#ifdef SUPPORT_ROUTER
 /* Launched in HTTP server thread. */
 static int
 router_wrapper(lua_h2o_handler_t *self, h2o_req_t *req)
@@ -2897,7 +2909,9 @@ router_wrapper(lua_h2o_handler_t *self, h2o_req_t *req)
 		lua_req_handler_ex(req, shuttle, 0);
 	return 0;
 }
+#endif /* SUPPORT_ROUTER */
 
+#ifdef SUPPORT_ROUTER
 /* Launched in TX thread.
  * Returns !0 on error. */
 static int
@@ -2928,7 +2942,9 @@ register_lua_router(lua_State *L, int router_ref, const char **lerr)
 			router_wrapper, NULL, router_ref);
 	return 0;
 }
+#endif /* SUPPORT_ROUTER */
 
+#ifdef SUPPORT_ROUTER
 /* Launched in TX thread.
  * Returns !0 on error. */
 static int
@@ -2978,6 +2994,7 @@ register_router(lua_State *L, int router_ref, const char **lerr)
 	return register_lua_router(L, router_ref, lerr);
 #endif /* SUPPORT_C_ROUTER */
 }
+#endif /* SUPPORT_ROUTER */
 
 /* Launched in HTTP server thread. */
 static inline shuttle_t *
@@ -5362,10 +5379,14 @@ get_handler_not_reconfig(lua_State *L, int idx, unsigned *lua_site_count_ptr)
 	if (lua_type(L, -1) == LUA_TFUNCTION)
 		register_lua_handler(luaL_ref(L, LUA_REGISTRYINDEX));
 	else {
+#ifdef SUPPORT_ROUTER
 		const char *lerr;
 		if (register_router(L,
 		    luaL_ref(L, LUA_REGISTRYINDEX), &lerr) != 0)
 			return lerr;
+#else /* SUPPORT_ROUTER */
+		return "handler is not a function";
+#endif /* SUPPORT_ROUTER */
 	}
 	return NULL;
 }

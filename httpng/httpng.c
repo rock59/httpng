@@ -66,15 +66,20 @@ typedef void (fill_router_data_t)(struct lua_State *L, const char *path,
 #define QUEUE_TO_TX_ITEMS (1 << 12) /* Must be power of 2 */
 #define QUEUE_FROM_TX_ITEMS (QUEUE_TO_TX_ITEMS << 1) /* Must be power of 2 */
 
-/* We would need this when (if) alloc would be performed from thread pools
- * w/o mutexes. */
-#define SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD
-#undef SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD
+#define SUPPORT_WEBSOCKETS
+//#undef SUPPORT_WEBSOCKETS
 
 /* We would need this when (if) alloc would be performed from thread pools
  * w/o mutexes. */
+#define SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD
+//#undef SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD
+
+#ifdef SUPPORT_WEBSOCKETS
+/* We would need this when (if) alloc would be performed from thread pools
+ * w/o mutexes. */
 #define SHOULD_FREE_RECV_DATA_IN_HTTP_SERVER_THREAD
-#undef SHOULD_FREE_RECV_DATA_IN_HTTP_SERVER_THREAD
+//#undef SHOULD_FREE_RECV_DATA_IN_HTTP_SERVER_THREAD
+#endif /* SUPPORT_WEBSOCKETS */
 
 #ifndef SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD
 #define USE_SHUTTLES_MUTEX
@@ -90,9 +95,6 @@ typedef void (fill_router_data_t)(struct lua_State *L, const char *path,
 #define H2O_CONTENT_LENGTH_UNSPECIFIED SIZE_MAX
 
 #define LUA_QUERY_NONE UINT_MAX
-
-#define SUPPORT_WEBSOCKETS
-//#undef SUPPORT_WEBSOCKETS
 
 #ifdef SUPPORT_WEBSOCKETS
 #define WS_CLIENT_KEY_LEN 24 /* Hardcoded in H2O. */

@@ -6072,7 +6072,9 @@ luaopen_httpng_c(lua_State *L)
 	box_null_cdata_type = luaL_ctypeid(L, "void *");
 
 	luaL_newlib(L, mylib);
+#ifdef SUPPORT_ROUTER
 	(void)luaL_dostring(L, "return require 'httpng.router'");
 	lua_setfield(L, -2, "router");
+#endif /* SUPPORT_ROUTER */
 	return 1;
 }

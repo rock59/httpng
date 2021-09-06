@@ -145,6 +145,8 @@ typedef unsigned shuttle_count_t;
 //#undef SUPPORT_GRACEFUL_THR_TERMINATION
 #define SUPPORT_RECONFIG
 //#undef SUPPORT_RECONFIG
+#define SUPPORT_LISTEN
+//#undef SUPPORT_LISTEN
 
 #ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 # ifndef SUPPORT_SHUTDOWN
@@ -426,7 +428,9 @@ static struct {
 	struct fiber *fiber_to_wake_on_reaping_done;
 #endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 	lua_h2o_handler_t *lua_handler;
+#ifdef SUPPORT_LISTEN
 	sni_map_t **sni_maps;
+#endif /* SUPPORT_LISTEN */
 #ifdef SUPPORT_C_ROUTER
 	fill_router_data_t *fill_router_data;
 #endif /* SUPPORT_C_ROUTER */
@@ -498,12 +502,14 @@ static const char min_proto_version_reconf[] =
 static const char openssl_security_level_reconf[] =
 	"openssl_security_level can't be changed on reconfiguration";
 #endif /* SUPPORT_RECONFIG */
+#ifdef SUPPORT_LISTEN
 static const char msg_bad_cert_num[] =
 	"Only one key/certificate pair can be specified if SNI is disabled";
 #ifndef NDEBUG
 static const char msg_cant_switch_ssl_ctx[] =
 	"Error while switching SSL context after scanning TLS SNI";
 #endif /* NDEBUG */
+#endif /* SUPPORT_LISTEN */
 
 /* FIXME: Rename after changing sample C handlers. */
 extern void free_shuttle(shuttle_t *);
@@ -3383,6 +3389,7 @@ ip_detection_fail:
 	return -1;
 }
 
+#ifdef SUPPORT_LISTEN
 /* Launched in TX thread. */
 static sni_map_t *
 sni_map_create(int certs_num, const char **lerr)
@@ -3417,7 +3424,9 @@ sni_map_alloc_fail:
 	assert(*lerr != NULL);
 	return NULL;
 }
+#endif /* SUPPORT_LISTEN */
 
+#ifdef SUPPORT_LISTEN
 /* Launched in TX thread. */
 static int
 sni_map_insert(sni_map_t *sni_map, const char *certificate_file,
@@ -3464,7 +3473,9 @@ error:
 	assert(*lerr != NULL);
 	return -1;
 }
+#endif /* SUPPORT_LISTEN */
 
+#ifdef SUPPORT_LISTEN
 /* Launched in TX thread. 
  * Frees ssl contexts, host names of sni map and itself. */
 static void
@@ -3478,7 +3489,9 @@ sni_map_free(sni_map_t *sni_map)
 		free((char *)sni_map->sni_fields[i].hostname.base);
 	free(sni_map);
 }
+#endif /* SUPPORT_LISTEN */
 
+#ifdef SUPPORT_LISTEN
 /* Launched in TX thread. */
 static void
 conf_sni_map_cleanup(void)
@@ -3489,7 +3502,9 @@ conf_sni_map_cleanup(void)
 		sni_map_free(conf.sni_maps[i]);
 	free(conf.sni_maps);
 }
+#endif /* SUPPORT_LISTEN */
 
+#ifdef SUPPORT_LISTEN
 #define GET_REQUIRED_LISTENER_FIELD(name, lua_ttype, convert_func_postfix) \
 	do { \
 		lua_getfield(L, -1, #name); \
@@ -3506,7 +3521,9 @@ conf_sni_map_cleanup(void)
 		name = lua_to##convert_func_postfix(L, -1); \
 		lua_pop(L, 1); \
 	} while (0);
+#endif /* SUPPORT_LISTEN */
 
+#ifdef SUPPORT_LISTEN
 /* Launched in TX thread. */
 static SSL_CTX *
 get_ssl_ctx_not_uses_sni(lua_State *L, unsigned listener_idx,
@@ -3548,7 +3565,9 @@ certs_num_fail:
 	assert(*lerr != NULL);
 	return NULL;
 }
+#endif /* SUPPORT_LISTEN */
 
+#ifdef SUPPORT_LISTEN
 /* Launched in HTTP thread. */
 static int
 servername_callback(SSL *s, int *al, void *arg)
@@ -3592,7 +3611,9 @@ set_ssl_ctx_fail:
 get_servername_fail:
 	return SSL_TLSEXT_ERR_ALERT_FATAL;
 }
+#endif /* SUPPORT_LISTEN */
 
+#ifdef SUPPORT_LISTEN
 /* Launched in TX thread. */
 static SSL_CTX *
 get_ssl_ctx_uses_sni(lua_State *L, unsigned listener_idx, const char **lerr)
@@ -3639,7 +3660,9 @@ sni_map_init_fail:
 	assert(*lerr != NULL);
 	return NULL;
 }
+#endif /* SUPPORT_LISTEN */
 
+#ifdef SUPPORT_LISTEN
 /* Launched in TX thread. */
 static SSL_CTX *
 get_tls_field_from_lua(lua_State *L, unsigned listener_idx,
@@ -3662,13 +3685,16 @@ tls_not_a_table:
 	assert(*lerr != NULL);
 	return NULL;
 }
+#endif /* SUPPORT_LISTEN */
 
 /* Launched in TX thread. */
 static int
 load_default_listen_params(const char **lerr)
 {
 	conf.num_listeners = 2;
+#ifdef SUPPORT_LISTEN
 	conf.sni_maps = NULL;
+#endif /* SUPPORT_LISTEN */
 	if ((conf.listener_cfgs =
 	    (typeof(conf.listener_cfgs))calloc(conf.num_listeners,
 	    sizeof(*conf.listener_cfgs))) == NULL) {
@@ -3710,6 +3736,7 @@ load_and_handle_listen_from_lua(lua_State *L, int lua_stack_idx_table,
 	SSL_library_init();
 	SSL_load_error_strings();
 
+#ifdef SUPPORT_LISTEN
 	lua_getfield(L, lua_stack_idx_table, "listen");
 	int need_to_pop = 1;
 	if (lua_isnil(L, -1)) {
@@ -3795,7 +3822,9 @@ load_and_handle_listen_from_lua(lua_State *L, int lua_stack_idx_table,
 open_listener_fail:
 required_field_fail:
 failed_parsing_clean_listen_conf:
+#ifdef SUPPORT_LISTEN
 	conf_sni_map_cleanup();
+#endif /* SUPPORT_LISTEN */
 	close_listener_cfgs_sockets();
 	conf.sni_maps = NULL;
 sni_map_alloc_fail:
@@ -3809,6 +3838,17 @@ listen_invalid_type:
 	ERR_free_strings();
 	assert(*lerr != NULL);
 	return 1;
+
+#else /* SUPPORT_LISTEN */
+
+	if (load_default_listen_params(lerr) == 0)
+		return 0;
+
+	EVP_cleanup();
+	ERR_free_strings();
+	assert(*lerr != NULL);
+	return 1;
+#endif /* SUPPORT_LISTEN */
 }
 
 #undef GET_REQUIRED_LISTENER_FIELD
@@ -4615,7 +4655,9 @@ on_shutdown_internal(lua_State *L, bool called_from_callback)
 	}
 #endif /* USE_LIBUV */
 	free(conf.listener_cfgs);
+#ifdef SUPPORT_LISTEN
 	conf_sni_map_cleanup();
+#endif /* SUPPORT_LISTEN */
 	dispose_h2o_configs();
 	free(conf.thread_ctxs);
 	luaL_unref(L, LUA_REGISTRYINDEX, conf.lua_handler_ref);
@@ -5732,7 +5774,9 @@ xtm_to_tx_fail:
 	xtm_delete_queues_to_tx(0, xtm_to_tx_idx);
 	close_listener_cfgs_sockets();
 	deinit_listener_cfgs();
+#ifdef SUPPORT_LISTEN
 	conf_sni_map_cleanup();
+#endif /* SUPPORT_LISTEN */
 invalid_handler:
 	unref_on_config_failure(L, lua_site_count);
 #ifdef SUPPORT_C_HANDLERS

@@ -1257,17 +1257,37 @@ take_shuttle_ownership_lua(lua_handler_state_t *state)
  * and calling us.
  * N. b.: We may have been awoken by cancellation request. */
 static inline void
-wait_for_lua_shuttle_return(lua_handler_state_t *state)
+wait_for_lua_shuttle_return_internal(lua_handler_state_t *state)
 {
-	if (state->cancelled)
-		return;
-
 	/* Add us into head of waiting list. */
 	waiter_t waiter = { .next = state->waiter, .fiber = fiber_self() };
 	state->waiter = &waiter;
 	fiber_yield();
 	if (state->waiter != NULL)
 		wakeup_waiter(state);
+}
+
+/* Launched in TX thread.
+ * Caller must call take_shuttle_ownership_lua() before filling in shuttle
+ * and calling us.
+ * N. b.: We may have been awoken by cancellation request. */
+static inline void
+wait_for_lua_shuttle_return(lua_handler_state_t *state)
+{
+	if (state->cancelled)
+		return;
+
+	wait_for_lua_shuttle_return_internal(state);
+}
+
+/* Launched in TX thread.
+ * Caller must call take_shuttle_ownership_lua() before filling in shuttle
+ * and calling us.
+ * N. b.: We may have been awoken by cancellation request. */
+static inline void
+wait_for_closed_ws_return(lua_handler_state_t *state)
+{
+	wait_for_lua_shuttle_return_internal(state);
 }
 
 /* Launched in TX thread. */
@@ -1729,7 +1749,7 @@ perform_ws_close(lua_State *L)
 
 	state->cancelled = true;
 	call_in_http_thr_close_websocket(state);
-	wait_for_lua_shuttle_return(state);
+	wait_for_closed_ws_return(state);
 	return 0;
 }
 #endif /* SUPPORT_WEBSOCKETS */

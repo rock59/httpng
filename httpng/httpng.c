@@ -2408,6 +2408,7 @@ process_handler_success_not_ws_without_send(lua_State *L, shuttle_t *shuttle)
 	free_cancelled_lua_not_ws_shuttle_from_tx(shuttle);
 }
 
+#ifdef SUPPORT_ROUTER
 /* Launched in TX thread */
 static int
 router_stash(lua_State *L)
@@ -2432,6 +2433,7 @@ router_stash(lua_State *L)
 	lua_gettable(L, -2);
 	return 1;
 }
+#endif /* SUPPORT_ROUTER */
 
 #ifdef SUPPORT_WEBSOCKETS
 /* Launched in TX thread. */
@@ -2465,8 +2467,10 @@ lua_fiber_func(va_list ap)
 
 	/* First param for Lua handler - req. */
 	lua_createtable(L, 0, 15);
+#ifdef SUPPORT_ROUTER
 	lua_pushcfunction(L, router_stash);
 	lua_setfield(L, -2, "stash");
+#endif /* SUPPORT_ROUTER */
 	lua_pushinteger(L, state->un.req.version_major);
 	lua_setfield(L, -2, "version_major");
 	lua_pushinteger(L, state->un.req.version_minor);

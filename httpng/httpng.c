@@ -177,6 +177,9 @@ typedef unsigned shuttle_count_t;
 #define SUPPORT_C_HANDLERS
 #undef SUPPORT_C_HANDLERS
 
+#define SUPPORT_REQ_INFO
+//#undef SUPPORT_REQ_INFO
+
 struct listener_ctx;
 
 typedef struct {
@@ -396,7 +399,9 @@ typedef struct {
 #endif /* SUPPORT_WEBSOCKETS */
 	unsigned char version_major;
 	unsigned char version_minor;
+#ifdef SUPPORT_REQ_INFO
 	bool is_encrypted;
+#endif /* SUPPORT_REQ_INFO */
 #ifdef SUPPORT_SPLITTING_LARGE_BODY
 	bool is_body_incomplete;
 #endif /* SUPPORT_SPLITTING_LARGE_BODY */
@@ -414,8 +419,10 @@ typedef struct {
 				 * from "our" HTTP server thread. */
 #endif /* SUPPORT_WEBSOCKETS */
 	waiter_t *waiter; /* Changed by TX thread. */
+#ifdef SUPPORT_REQ_INFO
 	struct sockaddr_storage peer;
 	struct sockaddr_storage ouraddr;
+#endif /* SUPPORT_REQ_INFO */
 	int lua_state_ref;
 #ifdef SUPPORT_WEBSOCKETS
 	int lua_recv_handler_ref;
@@ -2291,6 +2298,7 @@ call_in_http_thr_tx_done(thread_ctx_t *thread_ctx)
 }
 #endif /* SUPPORT_THR_TERMINATION */
 
+#ifdef SUPPORT_REQ_INFO
 /* Launched in TX thread. */
 static void
 push_addr_table(lua_State *L, lua_handler_state_t *state,
@@ -2339,6 +2347,7 @@ push_addr_table(lua_State *L, lua_handler_state_t *state,
 	lua_setfield(L, -2, "type");
 	lua_setfield(L, -2, name);
 }
+#endif /* SUPPORT_REQ_INFO */
 
 /* Launched in TX thread. */
 static inline void
@@ -2466,6 +2475,7 @@ lua_fiber_func(va_list ap)
 #endif /* SUPPORT_WEBSOCKETS */
 	lua_pushlightuserdata(L, shuttle);
 	lua_setfield(L, -2, shuttle_field_name);
+#ifdef SUPPORT_REQ_INFO
 	push_addr_table(L, state, "peer", offsetof(lua_handler_state_t, peer));
 	push_addr_table(L, state, "ouraddr",
 		offsetof(lua_handler_state_t, ouraddr));
@@ -2473,6 +2483,7 @@ lua_fiber_func(va_list ap)
 		lua_pushboolean(L, true);
 		lua_setfield(L, -2, "https");
 	}
+#endif /* SUPPORT_REQ_INFO */
 	if (conf.router_ref != LUA_REFNIL) {
 		lua_rawgeti(L, LUA_REGISTRYINDEX, conf.router_ref);
 		lua_setfield(L, -2, "_used_router");
@@ -2768,6 +2779,7 @@ lua_req_handler_ex(h2o_req_t *req,
 #endif /* SUPPORT_WEBSOCKETS */
 	state->waiter = NULL;
 
+#ifdef SUPPORT_REQ_INFO
 	socklen_t socklen = req->conn->callbacks->get_peername(req->conn,
 		(struct sockaddr *)&state->peer);
 	(void)socklen;
@@ -2776,6 +2788,7 @@ lua_req_handler_ex(h2o_req_t *req,
 		(struct sockaddr *)&state->ouraddr);
 	assert(socklen <= sizeof(state->ouraddr));
 	state->un.req.is_encrypted = h2o_is_req_transport_encrypted(req);
+#endif /* SUPPORT_REQ_INFO */
 
 	struct xtm_queue *const queue = get_queue_to_tx();
 	if (xtm_queue_push_fun(queue,

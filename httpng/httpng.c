@@ -78,7 +78,7 @@ typedef void (fill_router_data_t)(struct lua_State *L, const char *path,
 /* We would need this when (if) alloc would be performed from thread pools
  * w/o mutexes. */
 #define SHOULD_FREE_RECV_DATA_IN_HTTP_SERVER_THREAD
-//#undef SHOULD_FREE_RECV_DATA_IN_HTTP_SERVER_THREAD
+#undef SHOULD_FREE_RECV_DATA_IN_HTTP_SERVER_THREAD
 #endif /* SUPPORT_WEBSOCKETS */
 
 #ifndef SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD
@@ -893,7 +893,7 @@ static inline void
 call_in_http_thr_with_recv_data(recv_data_func_t *func, recv_data_t *recv_data)
 {
 	call_from_tx(recv_data->parent_shuttle->thread_ctx->queue_from_tx,
-		func, recv_data, thread_ctx);
+		func, recv_data, recv_data->parent_shuttle->thread_ctx);
 }
 #endif /* SHOULD_FREE_RECV_DATA_IN_HTTP_SERVER_THREAD */
 
@@ -1321,6 +1321,7 @@ wait_for_lua_shuttle_return(lua_handler_state_t *state)
 	wait_for_lua_shuttle_return_internal(state);
 }
 
+#ifdef SUPPORT_WEBSOCKETS
 /* Launched in TX thread.
  * Caller must call take_shuttle_ownership_lua() before filling in shuttle
  * and calling us.
@@ -1330,6 +1331,7 @@ wait_for_closed_ws_return(lua_handler_state_t *state)
 {
 	wait_for_lua_shuttle_return_internal(state);
 }
+#endif /* SUPPORT_WEBSOCKETS */
 
 /* Launched in TX thread. */
 static inline int

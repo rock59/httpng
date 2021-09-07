@@ -4427,7 +4427,6 @@ deinit_worker_thread(unsigned thread_idx)
 
 	destroy_h2o_context_and_loop(thread_ctx);
 
-	/* FIXME: Should flush these queues first. */
 	my_xtm_delete_queue_from_tx(thread_ctx);
 	free(thread_ctx->listener_ctxs);
 	assert(thread_ctx->shuttle_counter == 0);
@@ -5750,7 +5749,6 @@ get_use_body_split(lua_State *L, int idx, unsigned shuttle_size,
 
 /* N. b.: This macro uses goto. */
 #define PROCESS_OPTIONAL_PARAMS() \
-	; \
 	int is_integer; \
 	PROCESS_OPTIONAL_PARAM(threads); \
 	PROCESS_OPTIONAL_PARAM(max_conn_per_thread); \

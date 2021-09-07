@@ -1,7 +1,7 @@
 #ifdef USE_LIBUV
 #define H2O_USE_LIBUV 1
 #else
-#define H2O_USE_EPOLL 1 /* FIXME */
+#define H2O_USE_LIBUV 0
 #include <h2o/evloop_socket.h>
 #endif /* USE_LIBUV */
 #include <h2o.h>

@@ -185,6 +185,9 @@ typedef unsigned shuttle_count_t;
 #define SUPPORT_ROUTER
 //#undef SUPPORT_ROUTER
 
+#define SUPPORT_DEBUG_API
+//#undef SUPPORT_DEBUG_API
+
 struct listener_ctx;
 
 typedef struct {
@@ -6029,6 +6032,7 @@ force_decrease_threads(lua_State *L)
 }
 #endif /* SUPPORT_RECONFIG */
 
+#ifdef SUPPORT_DEBUG_API
 /* Launched in TX thread. */
 static int
 cfg_debug(lua_State *L)
@@ -6055,6 +6059,7 @@ error_no_parameters:
 	assert(lerr != NULL);
 	return luaL_error(L, lerr);
 }
+#endif /* SUPPORT_DEBUG_API */
 
 #ifdef SUPPORT_C_ROUTER
 /* Launched in HTTP server thread. */
@@ -6076,7 +6081,9 @@ static const struct luaL_Reg mylib[] = {
 #ifdef SUPPORT_RECONFIG
 	{"force_decrease_threads", force_decrease_threads},
 #endif /* SUPPORT_RECONFIG */
+#ifdef SUPPORT_DEBUG_API
 	{"_cfg_debug", cfg_debug},
+#endif /* SUPPORT_DEBUG_API */
 	{NULL, NULL}
 };
 

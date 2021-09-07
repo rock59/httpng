@@ -72,7 +72,7 @@ typedef void (fill_router_data_t)(struct lua_State *L, const char *path,
 /* We would need this when (if) alloc would be performed from thread pools
  * w/o mutexes. */
 #define SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD
-//#undef SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD
+#undef SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD
 
 #ifdef SUPPORT_WEBSOCKETS
 /* We would need this when (if) alloc would be performed from thread pools

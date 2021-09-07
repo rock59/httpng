@@ -280,7 +280,7 @@ typedef struct {
 	volatile bool thread_finished;
 #endif /* SUPPORT_THR_TERMINATION */
 #ifndef USE_LIBUV
-	volatile bool queue_from_tx_fd_consumed;
+	bool queue_from_tx_fd_consumed;
 #endif /* USE_LIBUV */
 } thread_ctx_t;
 
@@ -1072,8 +1072,7 @@ free_lua_websocket_shuttle_from_tx(shuttle_t *shuttle)
 		fiber_wakeup(state->recv_fiber);
 		fiber_yield();
 		struct lua_State *const L = luaT_state();
-		luaL_unref(L, LUA_REGISTRYINDEX,
-			state->lua_recv_handler_ref);
+		luaL_unref(L, LUA_REGISTRYINDEX, state->lua_recv_handler_ref);
 		luaL_unref(L, LUA_REGISTRYINDEX, state->lua_recv_state_ref);
 	}
 #ifdef SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD
@@ -1155,10 +1154,9 @@ cancel_processing_lua_req_in_tx(shuttle_t *shuttle)
 	} else if (state->fiber_done) {
 		assert(!state->cancelled);
 		free_cancelled_lua_not_ws_shuttle_from_tx(shuttle);
-	} else {
+	} else
 		state->cancelled = true;
-		; /* Fiber would clean up because we have set cancelled=true */
-	}
+		/* Fiber would clean up because we have set cancelled=true. */
 }
 
 /* Launched in HTTP server thread. */
@@ -1204,7 +1202,7 @@ proceed_sending_lua(h2o_generator_t *self, h2o_req_t *req)
 
 /* Launched in HTTP server thread. */
 static inline void
-send_lua(h2o_req_t *req, lua_handler_state_t *const state)
+send_lua(h2o_req_t *req, lua_handler_state_t *state)
 {
 	h2o_iovec_t buf;
 	buf.base = (char *)state->un.resp.any.payload;
@@ -1213,18 +1211,10 @@ send_lua(h2o_req_t *req, lua_handler_state_t *const state)
 		? H2O_SEND_STATE_FINAL : H2O_SEND_STATE_IN_PROGRESS);
 }
 
-/* Launched in HTTP server thread to postprocess first response
- * (with HTTP headers). */
+/* Launched in HTTP server thread. */
 static void
-postprocess_lua_req_first(shuttle_t *shuttle)
+fill_headers(lua_handler_state_t *state, h2o_req_t *req)
 {
-	if (shuttle->disposed)
-		return;
-	lua_handler_state_t *const state =
-		(lua_handler_state_t *)(&shuttle->payload);
-	h2o_req_t *const req = shuttle->never_access_this_req_from_tx_thread;
-	req->res.status = state->un.resp.first.http_code;
-	req->res.reason = "OK"; /* FIXME: Customizable? */
 	const unsigned num_headers = state->un.resp.first.num_headers;
 	unsigned header_idx;
 	for (header_idx = 0; header_idx < num_headers; ++header_idx) {
@@ -1240,6 +1230,21 @@ postprocess_lua_req_first(shuttle_t *shuttle)
 			NULL, /* FIXME: Do we need orig_name? */
 			header->value, header->value_len);
 	}
+}
+
+/* Launched in HTTP server thread to postprocess first response
+ * (with HTTP headers). */
+static void
+postprocess_lua_req_first(shuttle_t *shuttle)
+{
+	if (shuttle->disposed)
+		return;
+	lua_handler_state_t *const state =
+		(lua_handler_state_t *)(&shuttle->payload);
+	h2o_req_t *const req = shuttle->never_access_this_req_from_tx_thread;
+	req->res.status = state->un.resp.first.http_code;
+	req->res.reason = "OK"; /* FIXME: Customizable? */
+	fill_headers(state, req);
 
 	state->un.resp.any.generator = (h2o_generator_t){
 		proceed_sending_lua,
@@ -1435,8 +1440,7 @@ perform_write(lua_State *L)
 static void
 fill_http_headers(lua_State *L, lua_handler_state_t *state, int param_lua_idx)
 {
-	state->un.resp.first.content_length =
-		H2O_CONTENT_LENGTH_UNSPECIFIED;
+	state->un.resp.first.content_length = H2O_CONTENT_LENGTH_UNSPECIFIED;
 	if (lua_isnil(L, param_lua_idx))
 		return;
 
@@ -1466,8 +1470,7 @@ fill_http_headers(lua_State *L, lua_handler_state_t *state, int param_lua_idx)
 				state->un.resp.first.content_length =
 					candidate;
 		} else
-			add_http_header_to_lua_response(
-				&state->un.resp.first,
+			add_http_header_to_lua_response(&state->un.resp.first,
 				key, key_len, value, value_len);
 
 		/* Remove value, keep key for next iteration. */
@@ -1690,18 +1693,7 @@ postprocess_lua_req_upgrade_to_websocket(shuttle_t *shuttle)
 		return;
 	h2o_req_t *const req = shuttle->never_access_this_req_from_tx_thread;
 
-	const unsigned num_headers = state->un.resp.first.num_headers;
-	unsigned header_idx;
-	for (header_idx = 0; header_idx < num_headers; ++header_idx) {
-		const http_header_entry_t *const header =
-			&state->un.resp.first.headers[header_idx];
-		h2o_add_header_by_str(&req->pool, &req->res.headers,
-			header->name, header->name_len,
-			1, /* FIXME: Benchmark whether this faster than 0. */
-			NULL, /* FIXME: Do we need orig_name? */
-			header->value, header->value_len);
-
-	}
+	fill_headers(state, req);
 	state->upgraded_to_websocket = true;
 	state->ws_conn = h2o_upgrade_to_websocket(req,
 		state->ws_client_key, shuttle, websocket_msg_callback);
@@ -1859,8 +1851,7 @@ lua_websocket_recv_fiber_func(va_list ap)
 		state->is_recv_fiber_waiting = false;
 
 		/* User handler function, written in Lua. */
-		lua_rawgeti(L, LUA_REGISTRYINDEX,
-			state->lua_recv_handler_ref);
+		lua_rawgeti(L, LUA_REGISTRYINDEX, state->lua_recv_handler_ref);
 
 		recv_data_t *const recv_data = state->recv_data;
 		assert(recv_data->parent_shuttle == shuttle);
@@ -1875,7 +1866,8 @@ lua_websocket_recv_fiber_func(va_list ap)
 			 * Should we stop calling handler? */
 			fprintf(stderr, "User WebSocket recv handler for "
 				"\"\%s\" failed with error \"%s\"\n",
-				get_router_entry_id(state), lua_tostring(L, -1));
+				get_router_entry_id(state),
+				lua_tostring(L, -1));
 		state->in_recv_handler = false;
 		free_lua_websocket_recv_data_from_tx(recv_data);
 		fiber_wakeup(state->tx_fiber);
@@ -1926,9 +1918,8 @@ perform_upgrade_to_websocket(lua_State *L)
 			const char *const value =
 				lua_tolstring(L, -1, &value_len);
 
-			add_http_header_to_lua_response(
-					&state->un.resp.first,
-					key, key_len, value, value_len);
+			add_http_header_to_lua_response(&state->un.resp.first,
+				key, key_len, value, value_len);
 
 			/* Remove value, keep key for next iteration. */
 			lua_pop(L, 1);
@@ -1940,8 +1931,7 @@ perform_upgrade_to_websocket(lua_State *L)
 		state->recv_fiber = NULL;
 	else {
 		lua_pop(L, 1);
-		state->lua_recv_handler_ref =
-			luaL_ref(L, LUA_REGISTRYINDEX);
+		state->lua_recv_handler_ref = luaL_ref(L, LUA_REGISTRYINDEX);
 		struct lua_State *const new_L = lua_newthread(L);
 		state->lua_recv_state_ref = luaL_ref(L, LUA_REGISTRYINDEX);
 		if ((state->recv_fiber =
@@ -2052,10 +2042,9 @@ fill_received_headers_and_body(lua_State *L, shuttle_t *shuttle)
 	}
 	lua_setfield(L, -2, "headers");
 #ifdef SUPPORT_C_ROUTER
-	fill_router_data(L, &state->un.req.buffer[
-			state->un.req.router_data_len],
-		state->un.req.router_data_len,
-		&state->un.req.buffer);
+	fill_router_data(L,
+		&state->un.req.buffer[state->un.req.router_data_len],
+		state->un.req.router_data_len, &state->un.req.buffer);
 #endif /* SUPPORT_C_ROUTER */
 #ifdef SUPPORT_SPLITTING_LARGE_BODY
 	if (!state->un.req.is_body_incomplete)
@@ -2073,8 +2062,7 @@ fill_received_headers_and_body(lua_State *L, shuttle_t *shuttle)
 	 * HTTP server thread and pass pointer. */
 	char *body_buf = (char *)malloc(state->un.req.body_len);
 	if (body_buf == NULL)
-		/* There was memory allocation failure.
-		 * FIXME: Should log this. */
+		/* FIXME: Should log this. */
 		return 1;
 
 	memcpy(body_buf, &state->un.req.buffer[current_offset],
@@ -2101,8 +2089,7 @@ fill_received_headers_and_body(lua_State *L, shuttle_t *shuttle)
 				body_offset + state->un.req.body_len);
 			if (new_body_buf == NULL) {
 				free(body_buf);
-				/* There was memory allocation failure.
-				 * FIXME: Should log this. */
+				/* FIXME: Should log this. */
 				return 1;
 			}
 			body_buf = new_body_buf;
@@ -2134,8 +2121,7 @@ close_lua_req_internal(shuttle_t *shuttle)
 	if (state->sent_something)
 		call_in_http_thr_postprocess_lua_req_others(shuttle);
 	else {
-		state->un.resp.first.http_code =
-			get_default_http_code(state);
+		state->un.resp.first.http_code = get_default_http_code(state);
 		state->sent_something = true;
 		state->un.resp.first.content_length =
 			H2O_CONTENT_LENGTH_UNSPECIFIED;
@@ -2515,13 +2501,12 @@ lua_fiber_func(va_list ap)
 	lua_pushinteger(L, state->un.req.version_minor);
 	lua_setfield(L, -2, "version_minor");
 	push_path(L, state);
-	lua_pushlstring(L, &state->un.req.buffer[
-		state->un.req.router_data_len +
-		state->un.req.path_len], state->un.req.authority_len);
+	lua_pushlstring(L,
+		&state->un.req.buffer[state->un.req.router_data_len +
+			state->un.req.path_len], state->un.req.authority_len);
 	lua_setfield(L, -2, "host");
 	push_query(L, state);
-	lua_pushlstring(L, state->un.req.method,
-		state->un.req.method_len);
+	lua_pushlstring(L, state->un.req.method, state->un.req.method_len);
 	lua_setfield(L, -2, "method");
 #ifdef SUPPORT_WEBSOCKETS
 	lua_pushboolean(L, !!state->un.req.ws_client_key_len);
@@ -2557,8 +2542,7 @@ lua_fiber_func(va_list ap)
 	state->un.resp.any.is_last_send = false;
 
 	/* Second param for Lua handler - io. */
-	lua_createtable(L, 0,
-			5
+	lua_createtable(L, 0, 5
 #ifdef SUPPORT_WEBSOCKETS
 			+ 1
 #endif /* SUPPORT_WEBSOCKETS */
@@ -2637,8 +2621,7 @@ process_lua_req_in_tx(shuttle_t *shuttle)
 		state->un.resp.any.payload = error_str; \
 		state->un.resp.any.payload_len = sizeof(error_str) - 1; \
 		state->sent_something = true; \
-		state->un.resp.first.content_length = \
-			sizeof(error_str) - 1; \
+		state->un.resp.first.content_length = sizeof(error_str) - 1; \
 		call_in_http_thr_postprocess_lua_req_first(shuttle); \
 		return; \
 	} while (0)
@@ -2803,8 +2786,7 @@ lua_req_handler_ex(h2o_req_t *req,
 		if (conf.use_body_split) {
 			state->un.req.is_body_incomplete = true;
 			body_bytes_to_copy = max_offset - current_offset;
-			state->un.req.offset_within_body =
-				body_bytes_to_copy;
+			state->un.req.offset_within_body = body_bytes_to_copy;
 		} else
 #endif /* SUPPORT_SPLITTING_LARGE_BODY */
 		{
@@ -2929,8 +2911,7 @@ register_lua_handler_part_two(h2o_hostconf_t *hostconf)
 /* Launched in TX thread. */
 static h2o_pathconf_t *
 register_router_part_two(h2o_hostconf_t *hostconf,
-	lua_handler_func_t *handler,
-	void *handler_param, int router_ref)
+	lua_handler_func_t *handler, void *handler_param, int router_ref)
 {
 	return register_complex_handler_part_two(hostconf, handler,
 		handler_param, router_ref);
@@ -3274,8 +3255,7 @@ static void
 register_listener_cfgs_socket(int fd, SSL_CTX *ssl_ctx, unsigned listener_idx)
 {
 	assert(listener_idx < conf.num_listeners);
-	listener_cfg_t *const listener_cfg =
-		&conf.listener_cfgs[listener_idx];
+	listener_cfg_t *const listener_cfg = &conf.listener_cfgs[listener_idx];
 	assert(!listener_cfg->is_opened);
 	listener_cfg->fd = fd;
 	listener_cfg->ssl_ctx = ssl_ctx;
@@ -3343,8 +3323,7 @@ close_listening_sockets(thread_ctx_t *thread_ctx)
 #ifdef USE_LIBUV
 #error "close_listening_sockets() not implemented for libuv yet"
 #else /* USE_LIBUV */
-	listener_ctx_t *const listener_ctxs =
-			thread_ctx->listener_ctxs;
+	listener_ctx_t *const listener_ctxs = thread_ctx->listener_ctxs;
 
 	unsigned listener_idx;
 	/* FIXME: What if listeners_created==0 for thread #0?
@@ -3410,9 +3389,9 @@ listening_sockets_start_read(thread_ctx_t *thread_ctx)
 	    ++listener_idx) {
 		listener_ctx_t *const listener_ctx =
 		   &thread_ctx->listener_ctxs[listener_idx];
-		listener_ctx->sock = h2o_evloop_socket_create(
-				thread_ctx->ctx.loop,
-				listener_ctx->fd, H2O_SOCKET_FLAG_DONT_READ);
+		listener_ctx->sock =
+			h2o_evloop_socket_create(thread_ctx->ctx.loop,
+			listener_ctx->fd, H2O_SOCKET_FLAG_DONT_READ);
 		listener_ctx->sock->data = listener_ctx;
 		h2o_socket_read_start(listener_ctx->sock, on_accept);
 	}
@@ -3483,9 +3462,8 @@ open_listener(const char *addr_str, uint16_t port, const char **lerr)
 	}
 
 	int ipv6_flag = 1;
-	if (ai_family == AF_INET6 &&
-	    setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &ipv6_flag,
-		sizeof(ipv6_flag)) != 0) {
+	if (ai_family == AF_INET6 && setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY,
+	    &ipv6_flag, sizeof(ipv6_flag)) != 0) {
 		*lerr = "setsockopt IPV6_V6ONLY failed";
 		goto ipv6_only_set_fail;
 	}
@@ -3872,10 +3850,11 @@ load_default_listen_params(const char **lerr)
 #ifdef SUPPORT_LISTEN
 		register_listener_cfgs_socket(fd, NULL, 0);
 #else /* SUPPORT_LISTEN */
-		SSL_CTX *const ssl_ctx = make_ssl_ctx(hardcoded_certificate_file,
-			hardcoded_certificate_key_file,
-			conf.openssl_security_level,
-			conf.min_tls_proto_version, lerr);
+		SSL_CTX *const ssl_ctx =
+			make_ssl_ctx(hardcoded_certificate_file,
+				hardcoded_certificate_key_file,
+				conf.openssl_security_level,
+				conf.min_tls_proto_version, lerr);
 		if (ssl_ctx == NULL) {
 			close(fd);
 			goto Error;
@@ -3893,10 +3872,11 @@ load_default_listen_params(const char **lerr)
 #ifdef SUPPORT_LISTEN
 		register_listener_cfgs_socket(fd, NULL, 1);
 #else /* SUPPORT_LISTEN */
-		SSL_CTX *const ssl_ctx = make_ssl_ctx(hardcoded_certificate_file,
-			hardcoded_certificate_key_file,
-			conf.openssl_security_level,
-			conf.min_tls_proto_version, lerr);
+		SSL_CTX *const ssl_ctx =
+			make_ssl_ctx(hardcoded_certificate_file,
+				hardcoded_certificate_key_file,
+				conf.openssl_security_level,
+				conf.min_tls_proto_version, lerr);
 		if (ssl_ctx == NULL) {
 			close(fd);
 			goto Error;
@@ -4240,10 +4220,6 @@ prepare_worker_for_shutdown(thread_ctx_t *thread_ctx
 #endif /*  SUPPORT_GRACEFUL_THR_TERMINATION */
 	)
 {
-	/* FIXME: If we want to send something through existing
-	 * connections, should do it now (accepts are already
-	 * blocked). */
-
 #ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 	if (use_graceful_shutdown)
 		h2o_context_request_shutdown(&thread_ctx->ctx);
@@ -4319,7 +4295,6 @@ worker_func(void *param)
 	init_terminate_notifier(thread_ctx);
 #endif /* SUPPORT_THR_TERMINATION */
 
-	__sync_synchronize();
 #ifdef SUPPORT_THR_TERMINATION
 	httpng_sem_post(&thread_ctx->can_be_terminated);
 #endif /* SUPPORT_THR_TERMINATION */
@@ -4447,9 +4422,6 @@ tx_fiber_func(va_list ap)
 	struct xtm_queue *const queue_to_tx = thread_ctx->queue_to_tx;
 	const int pipe_fd = xtm_queue_consumer_fd(queue_to_tx);
 #ifdef SUPPORT_THR_TERMINATION
-	/* thread_ctx->tx_fiber_should_exit is read non-atomically for
-	 * performance reasons so it should be changed in this thread by
-	 * queueing corresponding function call. */
 	while (!thread_ctx->tx_fiber_should_exit)
 #else /* SUPPORT_THR_TERMINATION */
 	while (true)
@@ -4768,8 +4740,7 @@ reap_terminating_threads_ungracefully(void)
 	for (thr_idx = conf.num_threads - 1;
 	    thr_idx >= conf.num_desired_threads; --thr_idx) {
 		thread_ctx_t *const thread_ctx = &conf.thread_ctxs[thr_idx];
-		while (thread_ctx->active_lua_fibers ||
-		    !thread_ctx->thread_finished)
+		while (!thread_ctx->thread_finished)
 			fiber_sleep(0.001);
 	}
 #endif /* SUPPORT_RECONFIG */
@@ -4861,8 +4832,7 @@ on_shutdown_internal(lua_State *L, bool called_from_callback)
 		thread_ctx_t *const thread_ctx =
 			&conf.thread_ctxs[thr_idx];
 		/* We must yield CPU to other fibers to finish. */
-		while (thread_ctx->active_lua_fibers ||
-		    !thread_ctx->thread_finished)
+		while (!thread_ctx->thread_finished)
 			fiber_sleep(0.001);
 		reap_finished_thread(thread_ctx);
 		assert(thread_ctx->shuttle_counter == 0);
@@ -5541,9 +5511,8 @@ register_c_handlers(const path_desc_t *path_descs,
 		unsigned thread_idx;
 		for (thread_idx = 0; thread_idx < MAX_threads;
 		    ++thread_idx)
-			register_handler(conf.thread_ctxs[thread_idx]
-				.hostconf, path_desc->path,
-				path_desc->handler);
+			register_handler(conf.thread_ctxs[thread_idx].hostconf,
+				path_desc->path, path_desc->handler);
 	} while ((++path_desc)->path != NULL);
 	*count_ptr = path_desc - path_descs;
 	return NULL;
@@ -5559,8 +5528,7 @@ register_hosts(void)
 		h2o_config_init(&conf.thread_ctxs[idx].globalconf);
 
 	for (idx = 0; idx < MAX_threads; ++idx) {
-		thread_ctx_t *const thread_ctx =
-			&conf.thread_ctxs[idx];
+		thread_ctx_t *const thread_ctx = &conf.thread_ctxs[idx];
 		/* FIXME: Should make customizable. */
 		if ((thread_ctx->hostconf =
 		    h2o_config_register_host(&thread_ctx->globalconf,
@@ -5584,8 +5552,7 @@ configure_handler_security_listen(lua_State *L, int idx,
 	unsigned lua_site_count = 0;
 
 	assert(*lua_site_count_ptr == 0);
-	if ((lerr = get_handler_not_reconfig(L, idx,
-	    &lua_site_count)) != NULL)
+	if ((lerr = get_handler_not_reconfig(L, idx, &lua_site_count)) != NULL)
 		return lerr;
 
 	*lua_site_count_ptr = lua_site_count;
@@ -5959,13 +5926,6 @@ cfg(lua_State *L)
 	    )) != NULL)
 		goto invalid_handler;
 
-#if 0
-	/* FIXME: Should make customizable. */
-	/* Never returns NULL. */
-	h2o_logger_t *logger = h2o_access_log_register(&config.default_host,
-		"/dev/stdout", NULL);
-#endif
-
 	unsigned xtm_to_tx_idx = 0;
 	if ((lerr = create_xtm_queues_to_tx(&xtm_to_tx_idx, conf.num_threads))
 	    != NULL)
@@ -5998,8 +5958,6 @@ cfg(lua_State *L)
 		, use_body_split
 #endif /* SUPPORT_SPLITTING_LARGE_BODY */
 		);
-
-	__sync_synchronize();
 
 	unsigned thr_launch_idx = 0;
 	if ((lerr = start_worker_threads(&thr_launch_idx, conf.num_threads)) !=

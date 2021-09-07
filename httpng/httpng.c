@@ -3324,7 +3324,6 @@ prepare_listening_sockets(thread_ctx_t *thread_ctx)
 
 		if (thread_ctx->idx) {
 			if ((listener_ctx->fd = dup(listener_cfg->fd)) < 0)
-				/* FIXME: Should report. */
 				return false;
 		} else
 			listener_ctx->fd = listener_cfg->fd;
@@ -3506,7 +3505,6 @@ open_listener(const char *addr_str, uint16_t port, const char **lerr)
 		int flag = 1;
 		if (setsockopt(fd, IPPROTO_TCP, TCP_DEFER_ACCEPT, &flag,
 		    sizeof(flag)) != 0)
-			/* FIXME: report in log */
 			fprintf(stderr, "setting TCP_DEFER_ACCEPT failed\n");
 	}
 #endif /* TCP_DEFER_ACCEPT */
@@ -3525,7 +3523,6 @@ open_listener(const char *addr_str, uint16_t port, const char **lerr)
 #endif /* __APPLE__ */
 		if (setsockopt(fd, IPPROTO_TCP, TCP_FASTOPEN,
 		    (const void *)&tfo_queues, sizeof(tfo_queues)) != 0)
-			/* FIXME: report in log. */
 			fprintf(stderr, "setting TCP TFO feature failed\n");
 #else /* TCP_FASTOPEN */
 		assert(!".tfo_queues not zero on platform w/o TCP_FASTOPEN");
@@ -3739,7 +3736,6 @@ servername_callback(SSL *s, int *al, void *arg)
 		TLSEXT_NAMETYPE_host_name);
 	if (servername == NULL) {
 #ifndef NDEBUG
-		/* FIXME: report to log. */
 		fprintf(stderr, "Server name is not received:%s\n",
 			servername);
 #endif /* NDEBUG */
@@ -3757,7 +3753,6 @@ servername_callback(SSL *s, int *al, void *arg)
 			SSL_CTX *ssl_ctx = sni_map->sni_fields[i].ssl_ctx;
 			if (SSL_set_SSL_CTX(s, ssl_ctx) == NULL) {
 #ifndef NDEBUG
-				/* FIXME: report to log. */
 				fprintf(stderr, "%s\n",
 					msg_cant_switch_ssl_ctx);
 #endif /* NDEBUG */
@@ -4094,18 +4089,15 @@ init_worker_thread(unsigned thread_idx)
 
 #ifdef USE_SHUTTLES_MUTEX
 	if (pthread_mutex_init(&thread_ctx->shuttles_mutex, NULL) != 0)
-		/* FIXME: Report. */
 		goto mutex_init_failed;
 #endif /* USE_SHUTTLES_MUTEX */
 
 	if ((thread_ctx->queue_from_tx = xtm_queue_new(QUEUE_FROM_TX_ITEMS))
 	    == NULL)
-		/* FIXME: Report. */
 		goto alloc_xtm_failed;
 
 	if ((thread_ctx->listener_ctxs = (listener_ctx_t *)
 	    malloc(conf.num_listeners * sizeof(listener_ctx_t))) == NULL)
-		/* FIXME: Report. */
 		goto alloc_ctxs_failed;
 
 	thread_ctx->shuttle_counter = 0;
@@ -4132,21 +4124,17 @@ init_worker_thread(unsigned thread_idx)
 
 #ifdef USE_LIBUV
 	if (uv_tcp_init(thread_ctx->ctx.loop, &listener_ctx->uv_tcp_listener))
-		/* FIXME: Should report. */
 		goto uv_tcp_init_failed;
 	if (uv_tcp_open(&listener_ctx->uv_tcp_listener, listener_ctx->fd))
-		/* FIXME: Should report. */
 		goto uv_tcp_open_failed;
 	fd_consumed = 1;
 	listener_ctx->uv_tcp_listener.data = listener_ctx;
 	if (uv_listen((uv_stream_t *)&listener_ctx->uv_tcp_listener,
 	    SOMAXCONN, on_accept))
-		/* FIXME: Should report. */
 		goto uv_listen_failed;
 
 	if (uv_poll_init(thread_ctx->ctx.loop, &thread_ctx->uv_poll_from_tx,
 	    xtm_queue_consumer_fd(thread_ctx->queue_from_tx)))
-		/* FIXME: Should report. */
 		goto uv_poll_init_failed;
 	if (uv_poll_start(&thread_ctx->uv_poll_from_tx, UV_READABLE,
 	    on_call_from_tx))

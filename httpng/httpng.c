@@ -3854,6 +3854,9 @@ load_default_listen_params(const char **lerr)
 	conf.num_listeners = 2;
 #ifdef SUPPORT_LISTEN
 	conf.sni_maps = NULL;
+#else /* SUPPORT_LISTEN */
+	static const char hardcoded_certificate_file[] = "examples/cert.pem";
+	static const char hardcoded_certificate_key_file[] = "examples/key.pem";
 #endif /* SUPPORT_LISTEN */
 	if ((conf.listener_cfgs =
 	    (typeof(conf.listener_cfgs))calloc(conf.num_listeners,
@@ -3869,7 +3872,19 @@ load_default_listen_params(const char **lerr)
 		const int fd = open_listener(addr, port, lerr);
 		if (fd < 0)
 			goto Error;
+#ifdef SUPPORT_LISTEN
 		register_listener_cfgs_socket(fd, NULL, 0);
+#else /* SUPPORT_LISTEN */
+		SSL_CTX *const ssl_ctx = make_ssl_ctx(hardcoded_certificate_file,
+			hardcoded_certificate_key_file,
+			conf.openssl_security_level,
+			conf.min_tls_proto_version, lerr);
+		if (ssl_ctx == NULL) {
+			close(fd);
+			goto Error;
+		}
+		register_listener_cfgs_socket(fd, ssl_ctx, 0);
+#endif /* SUPPORT_LISTEN */
 	}
 
 	{
@@ -3878,7 +3893,19 @@ load_default_listen_params(const char **lerr)
 		const int fd = open_listener(addr, port, lerr);
 		if (fd < 0)
 			goto Error;
+#ifdef SUPPORT_LISTEN
 		register_listener_cfgs_socket(fd, NULL, 1);
+#else /* SUPPORT_LISTEN */
+		SSL_CTX *const ssl_ctx = make_ssl_ctx(hardcoded_certificate_file,
+			hardcoded_certificate_key_file,
+			conf.openssl_security_level,
+			conf.min_tls_proto_version, lerr);
+		if (ssl_ctx == NULL) {
+			close(fd);
+			goto Error;
+		}
+		register_listener_cfgs_socket(fd, ssl_ctx, 1);
+#endif /* SUPPORT_LISTEN */
 	}
 
 	return 0;

@@ -195,6 +195,8 @@ typedef unsigned shuttle_count_t;
 
 #define SUPPORT_DEBUG_API
 //#undef SUPPORT_DEBUG_API
+#define SUPPORT_FULL_WRITE_API
+//#undef SUPPORT_FULL_WRITE_API
 
 struct listener_ctx;
 
@@ -1362,12 +1364,18 @@ get_default_http_code(lua_handler_state_t *state)
 static int
 perform_write(lua_State *L)
 {
+#ifdef SUPPORT_FULL_WRITE_API
 	/* Lua parameters: self, payload, is_last. */
+#else /* SUPPORT_FULL_WRITE_API */
+	/* Lua parameters: self, payload. */
+#endif /* SUPPORT_FULL_WRITE_API */
 	enum {
 		LUA_STACK_IDX_SELF = 1,
 		LUA_STACK_IDX_PAYLOAD = 2,
 		LUA_STACK_REQUIRED_PARAMS_COUNT = LUA_STACK_IDX_PAYLOAD,
+#ifdef SUPPORT_FULL_WRITE_API
 		LUA_STACK_IDX_IS_LAST = 3,
+#endif /* SUPPORT_FULL_WRITE_API */
 	};
 	const unsigned num_params = lua_gettop(L);
 	if (num_params < LUA_STACK_REQUIRED_PARAMS_COUNT)
@@ -1394,9 +1402,11 @@ perform_write(lua_State *L)
 	state->un.resp.any.payload_len = payload_len;
 
 	bool is_last;
+#ifdef SUPPORT_FULL_WRITE_API
 	if (num_params >= LUA_STACK_IDX_IS_LAST)
 		is_last	= lua_toboolean(L, LUA_STACK_IDX_IS_LAST);
 	else
+#endif /* SUPPORT_FULL_WRITE_API */
 		is_last = false;
 
 	state->un.resp.any.is_last_send = is_last;
@@ -1478,14 +1488,20 @@ set_no_payload(lua_handler_state_t *state)
 static int
 perform_write_header(lua_State *L)
 {
+#ifdef SUPPORT_FULL_WRITE_API
 	/* Lua parameters: self, code, headers, payload, is_last. */
+#else /* SUPPORT_FULL_WRITE_API */
+	/* Lua parameters: self, code, headers. */
+#endif/* SUPPORT_FULL_WRITE_API */
 	enum {
 		LUA_STACK_IDX_SELF = 1,
 		LUA_STACK_IDX_CODE = 2,
 		LUA_STACK_REQUIRED_PARAMS_COUNT = LUA_STACK_IDX_CODE,
 		LUA_STACK_IDX_HEADERS = 3,
+#ifdef SUPPORT_FULL_WRITE_API
 		LUA_STACK_IDX_PAYLOAD = 4,
 		LUA_STACK_IDX_IS_LAST = 5,
+#endif /* SUPPORT_FULL_WRITE_API */
 	};
 	const unsigned num_params = lua_gettop(L);
 	if (num_params < LUA_STACK_REQUIRED_PARAMS_COUNT)
@@ -1498,9 +1514,11 @@ perform_write_header(lua_State *L)
 	shuttle_t *const shuttle = (shuttle_t *)lua_touserdata(L, -1);
 
 	bool is_last;
+#ifdef SUPPORT_FULL_WRITE_API
 	if (num_params >= LUA_STACK_IDX_IS_LAST)
 		is_last	= lua_toboolean(L, LUA_STACK_IDX_IS_LAST);
 	else
+#endif /* SUPPORT_FULL_WRITE_API */
 		is_last = false;
 
 	lua_handler_state_t *const state =
@@ -1531,12 +1549,14 @@ perform_write_header(lua_State *L)
 	}
 	fill_http_headers(L, state, headers_lua_index);
 
+#ifdef SUPPORT_FULL_WRITE_API
 	if (num_params >= LUA_STACK_IDX_PAYLOAD) {
 		size_t payload_len;
 		state->un.resp.any.payload =
 			lua_tolstring(L, LUA_STACK_IDX_PAYLOAD, &payload_len);
 		state->un.resp.any.payload_len = payload_len;
 	} else
+#endif /* SUPPORT_FULL_WRITE_API */
 		set_no_payload(state);
 
 	state->un.resp.any.is_last_send = is_last;

@@ -69,6 +69,9 @@ typedef void (fill_router_data_t)(struct lua_State *L, const char *path,
 #define SUPPORT_WEBSOCKETS
 //#undef SUPPORT_WEBSOCKETS
 
+#define SUPPORT_GRACEFUL_THR_TERMINATION
+//#undef SUPPORT_GRACEFUL_THR_TERMINATION
+
 /* We would need this when (if) alloc would be performed from thread pools
  * w/o mutexes. */
 #define SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD
@@ -105,7 +108,12 @@ typedef void (fill_router_data_t)(struct lua_State *L, const char *path,
 #define DEFAULT_max_shuttles_per_thread 4096
 #define DEFAULT_shuttle_size 65536
 #define DEFAULT_max_body_len (1024 * 1024)
+#ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 #define DEFAULT_thread_termination_timeout 60
+#endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
+
+#define SUPPORT_CONFIGURING_OPENSSL
+//#undef SUPPORT_CONFIGURING_OPENSSL
 
 /* Limits are quite relaxed for now. */
 #define MIN_threads 1
@@ -122,6 +130,7 @@ typedef unsigned shuttle_count_t;
 #define MAX_shuttle_size (16 * 1024 * 1024)
 #define MAX_max_body_len LLONG_MAX
 
+#ifdef SUPPORT_CONFIGURING_OPENSSL
 /* N.b.: for SSL3 to work you should probably use custom OpenSSL build. */
 #define SSL3_STR "ssl3"
 #define TLS1_STR "tls1"
@@ -129,6 +138,7 @@ typedef unsigned shuttle_count_t;
 #define TLS1_1_STR "tls1.1"
 #define TLS1_2_STR "tls1.2"
 #define TLS1_3_STR "tls1.3"
+#endif /* SUPPORT_CONFIGURING_OPENSSL */
 
 #define SUPPORT_SHUTDOWN
 //#undef SUPPORT_SHUTDOWN
@@ -151,8 +161,6 @@ typedef unsigned shuttle_count_t;
 
 #define SUPPORT_THR_TERMINATION
 //#undef SUPPORT_THR_TERMINATION
-#define SUPPORT_GRACEFUL_THR_TERMINATION
-//#undef SUPPORT_GRACEFUL_THR_TERMINATION
 #define SUPPORT_RECONFIG
 //#undef SUPPORT_RECONFIG
 #define SUPPORT_LISTEN
@@ -187,8 +195,6 @@ typedef unsigned shuttle_count_t;
 
 #define SUPPORT_DEBUG_API
 //#undef SUPPORT_DEBUG_API
-#define SUPPORT_CONFIGURING_OPENSSL
-//#undef SUPPORT_CONFIGURING_OPENSSL
 
 struct listener_ctx;
 

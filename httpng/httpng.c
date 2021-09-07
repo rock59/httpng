@@ -3237,7 +3237,7 @@ on_accept(h2o_socket_t *listener, const char *err)
 
 #endif /* USE_LIBUV */
 
-/* Can be launched in TX thread or HTTP server thread. */
+/* Launched in TX thread. */
 static inline void
 set_cloexec(int fd)
 {

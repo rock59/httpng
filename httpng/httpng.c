@@ -2119,7 +2119,7 @@ fill_received_headers_and_body(lua_State *L, shuttle_t *shuttle)
 
 /* Launched in TX thread. */
 static void
-close_lua_req_internal(lua_State *L, shuttle_t *shuttle)
+close_lua_req_internal(shuttle_t *shuttle)
 {
 	lua_handler_state_t *const state =
 		(lua_handler_state_t *)&shuttle->payload;
@@ -2159,7 +2159,7 @@ perform_close(lua_State *L)
 	if (!lua_islightuserdata(L, -1))
 		return luaL_error(L, "shuttle is invalid");
 	shuttle_t *const shuttle = (shuttle_t *)lua_touserdata(L, -1);
-	close_lua_req_internal(L, shuttle);
+	close_lua_req_internal(shuttle);
 	return 0;
 }
 
@@ -2423,7 +2423,7 @@ process_internal_error(shuttle_t *shuttle)
 
 /* Launched in TX thread. */
 static inline void
-process_handler_success_not_ws_without_send(lua_State *L, shuttle_t *shuttle)
+process_handler_success_not_ws_without_send(shuttle_t *shuttle)
 {
 	lua_handler_state_t *const state =
 		(lua_handler_state_t *)&shuttle->payload;
@@ -2438,7 +2438,7 @@ process_handler_success_not_ws_without_send(lua_State *L, shuttle_t *shuttle)
 		return;
 	}
 
-	close_lua_req_internal(L, shuttle);
+	close_lua_req_internal(shuttle);
 	if (!state->cancelled)
 		goto Done;
 
@@ -2599,7 +2599,7 @@ lua_fiber_func(va_list ap)
 		handle_ws_free(state);
 #endif /* SUPPORT_WEBSOCKETS */
 	else if (lua_isnil(L, -1))
-		process_handler_success_not_ws_without_send(L, shuttle);
+		process_handler_success_not_ws_without_send(shuttle);
 	else
 		process_handler_success_not_ws_with_send(L, shuttle);
 

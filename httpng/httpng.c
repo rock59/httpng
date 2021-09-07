@@ -187,6 +187,8 @@ typedef unsigned shuttle_count_t;
 
 #define SUPPORT_DEBUG_API
 //#undef SUPPORT_DEBUG_API
+#define SUPPORT_CONFIGURING_OPENSSL
+//#undef SUPPORT_CONFIGURING_OPENSSL
 
 struct listener_ctx;
 
@@ -547,6 +549,10 @@ static struct {
 	.on_shutdown_ref = LUA_REFNIL,
 #endif /* SUPPORT_SHUTDOWN */
 	.max_shuttles_per_thread = DEFAULT_max_shuttles_per_thread,
+#ifndef SUPPORT_CONFIGURING_OPENSSL
+	.openssl_security_level = DEFAULT_OPENSSL_SECURITY_LEVEL,
+	.min_tls_proto_version = DEFAULT_MIN_TLS_PROTO_VERSION_NUM,
+#endif /* SUPPORT_CONFIGURING_OPENSSL */
 };
 
 __thread thread_ctx_t *curr_thread_ctx;
@@ -557,10 +563,12 @@ static const char shuttle_field_name[] = "_shuttle";
 #ifdef SUPPORT_RECONFIG
 static const char msg_cant_reap[] =
 	"Unable to reconfigure until threads will shut down";
+#ifdef SUPPORT_CONFIGURING_OPENSSL
 static const char min_proto_version_reconf[] =
 	"min_proto_version can't be changed on reconfiguration";
 static const char openssl_security_level_reconf[] =
 	"openssl_security_level can't be changed on reconfiguration";
+#endif /* SUPPORT_CONFIGURING_OPENSSL */
 #endif /* SUPPORT_RECONFIG */
 #ifdef SUPPORT_LISTEN
 static const char msg_bad_cert_num[] =
@@ -5204,6 +5212,7 @@ configure_and_start_reaper_fiber(void)
 }
 #endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 
+#ifdef SUPPORT_CONFIGURING_OPENSSL
 /* Launched in TX thread. */
 static inline const char *
 parse_min_proto_version(const char *min_proto_version_str,
@@ -5252,6 +5261,7 @@ parse_min_proto_version(const char *min_proto_version_str,
 	/* This is security, do not silently fall back to defaults. */
 	return "unknown min_proto_version specified";
 }
+#endif /* SUPPORT_CONFIGURING_OPENSSL */
 
 #ifdef SUPPORT_GRACEFUL_THR_TERMINATION
 /* Launched in TX thread. */
@@ -5272,6 +5282,7 @@ get_thread_termination_timeout(lua_State *L,
 }
 #endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 
+#ifdef SUPPORT_CONFIGURING_OPENSSL
 /* Launched in TX thread. */
 static const char *
 get_min_proto_version(lua_State *L, int idx, bool is_reconfig)
@@ -5308,7 +5319,9 @@ get_min_proto_version(lua_State *L, int idx, bool is_reconfig)
 	return parse_min_proto_version(min_proto_version_str,
 		min_proto_version_len, is_reconfig);
 }
+#endif /* SUPPORT_CONFIGURING_OPENSSL */
 
+#ifdef SUPPORT_CONFIGURING_OPENSSL
 /* Launched in TX thread. */
 static const char *
 get_openssl_security_level(lua_State *L, int idx, bool is_reconfig)
@@ -5352,6 +5365,7 @@ get_openssl_security_level(lua_State *L, int idx, bool is_reconfig)
 		conf.openssl_security_level = openssl_security_level;
 	return NULL;
 }
+#endif /* SUPPORT_CONFIGURING_OPENSSL */
 
 #ifdef SUPPORT_RECONFIG
 /* Launched in TX thread. */
@@ -5544,11 +5558,13 @@ configure_handler_security_listen(lua_State *L, int idx,
 	    sizeof(lua_handler_state_t))
 		return "shuttle_size is too small for Lua handlers";
 
+#ifdef SUPPORT_CONFIGURING_OPENSSL
 	if ((lerr = get_min_proto_version(L, idx, false)) != NULL)
 		return lerr;
 
 	if ((lerr = get_openssl_security_level(L, idx, false)) != NULL)
 		return lerr;
+#endif /* SUPPORT_CONFIGURING_OPENSSL */
 
 	if (load_and_handle_listen_from_lua(L, idx, &lerr) != 0)
 		return lerr;
@@ -5566,11 +5582,13 @@ reconfig_handler_security_listen_threads(lua_State *L, int idx,
 	if ((lerr = get_handler_reconfig(L, idx, handler_replaced)) != NULL)
 		return lerr;
 
+#ifdef SUPPORT_CONFIGURING_OPENSSL
 	if ((lerr = get_min_proto_version(L, idx, true)) != NULL)
 		return lerr;
 
 	if ((lerr = get_openssl_security_level(L, idx, true)) != NULL)
 		return lerr;
+#endif /* SUPPORT_CONFIGURING_OPENSSL */
 
 	lua_getfield(L, idx, "listen");
 	if (!lua_isnil(L, -1))

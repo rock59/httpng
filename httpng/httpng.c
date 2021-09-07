@@ -4062,7 +4062,7 @@ reset_thread_ctx(unsigned idx)
 
 /* Launched in TX thread. */
 static void
-destroy_h2o_context_and_loop(thread_ctx_t *thread_ctx)
+cleanup_h2o(thread_ctx_t *thread_ctx)
 {
 #ifdef USE_LIBUV
 	uv_loop_close(&thread_ctx->loop);
@@ -4158,7 +4158,7 @@ uv_tcp_init_failed:
 
 prepare_listening_sockets_failed:
 	close_listening_sockets(thread_ctx);
-	destroy_h2o_context_and_loop(thread_ctx);
+	cleanup_h2o(thread_ctx);
 
 	free(thread_ctx->listener_ctxs);
 alloc_ctxs_failed:
@@ -4425,7 +4425,7 @@ deinit_worker_thread(unsigned thread_idx)
 	h2o_evloop_run(loop, 0); /* To actually free memory. */
 #endif /* USE_LIBUV */
 
-	destroy_h2o_context_and_loop(thread_ctx);
+	cleanup_h2o(thread_ctx);
 
 	my_xtm_delete_queue_from_tx(thread_ctx);
 	free(thread_ctx->listener_ctxs);
@@ -4669,7 +4669,7 @@ static void
 reap_finished_thread(thread_ctx_t *thread_ctx)
 {
 	pthread_join(thread_ctx->tid, NULL);
-	destroy_h2o_context_and_loop(thread_ctx);
+	cleanup_h2o(thread_ctx);
 
 	struct fiber * *const tx_fiber = &conf.tx_fiber_ptrs[thread_ctx->idx];
 	if (*tx_fiber != NULL) {

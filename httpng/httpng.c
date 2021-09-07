@@ -154,7 +154,9 @@ typedef unsigned shuttle_count_t;
 	(type *)( (char *)__mptr - offsetof(type,member)  );})
 
 #define DEFAULT_MIN_TLS_PROTO_VERSION_NUM TLS1_2_VERSION
+#ifdef SUPPORT_CONFIGURING_OPENSSL
 #define DEFAULT_MIN_TLS_PROTO_VERSION_STR TLS1_2_STR
+#endif /* SUPPORT_CONFIGURING_OPENSSL */
 #define DEFAULT_OPENSSL_SECURITY_LEVEL 1
 
 #define STR_PORT_LENGTH 8

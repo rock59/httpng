@@ -1,6 +1,8 @@
 #ifndef HTTPNG_SEM_H
 #define HTTPNG_SEM_H
 
+#include <errno.h>
+
 #ifdef __APPLE__
 #include <dispatch/dispatch.h>
 typedef dispatch_semaphore_t httpng_sem_t;

@@ -36,7 +36,6 @@ typedef void (fill_router_data_t)(struct lua_State *L, const char *path,
 	unsigned data_len, void *data);
 
 struct shuttle;
-struct shuttle *prepare_shuttle2(h2o_req_t *);
 void lua_req_handler_ex(h2o_req_t *,
 	struct shuttle *, int, unsigned, int);
 void *get_router_data(struct shuttle *, unsigned *);

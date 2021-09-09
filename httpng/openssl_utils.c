@@ -1,13 +1,8 @@
 #include "openssl_utils.h"
-#ifdef USE_LIBUV
-#define H2O_USE_LIBUV 1
-#else
-#define H2O_USE_EPOLL 1 /* FIXME */
-#endif /* USE_LIBUV */
-#include <h2o.h>
+#include "httpng_config.h"
 #include <assert.h>
-#include <stdio.h>
 
+#ifdef SUPPORT_LISTEN
 /* NOTE: only PEM format certificate is allowed */
 X509 *
 get_X509_from_certificate_path(const char *cert_path, const char **lerr)
@@ -35,7 +30,9 @@ fopen_fail:
 	assert(cert != NULL || *lerr != NULL);
 	return cert;
 }
+#endif /* SUPPORT_LISTEN */
 
+#ifdef SUPPORT_LISTEN
 const char *
 get_subject_common_name(X509 *cert)
 {
@@ -54,6 +51,7 @@ get_subject_common_name(X509 *cert)
 	}
 	return common_name;
 }
+#endif /* SUPPORT_LISTEN */
 
 /* NOTE: only PEM format is allowed */
 SSL_CTX *

@@ -644,10 +644,14 @@ perform_write(lua_State *L)
 		(lua_handler_state_t *)&shuttle->payload;
 	take_shuttle_ownership_lua(state);
 	if (state->cancelled) {
+#ifdef SUPPORT_RETURN_FROM_WRITE
 		/* Returning Lua true because connection has already
 		 * been closed. */
 		lua_pushboolean(L, true);
 		return 1;
+#else /* SUPPORT_RETURN_FROM_WRITE */
+		return 0;
+#endif /* SUPPORT_RETURN_FROM_WRITE */
 	}
 
 	size_t payload_len;
@@ -678,9 +682,13 @@ perform_write(lua_State *L)
 		call_in_http_thr_postprocess_lua_req_others(shuttle);
 	wait_for_lua_shuttle_return(state);
 
+#ifdef SUPPORT_RETURN_FROM_WRITE
 	/* Returning Lua true if connection has already been closed. */
 	lua_pushboolean(L, state->cancelled);
 	return 1;
+#else /* SUPPORT_RETURN_FROM_WRITE */
+	return 0;
+#endif /* SUPPORT_RETURN_FROM_WRITE */
 }
 
 /* Launched in TX thread. */
@@ -779,11 +787,14 @@ perform_write_header(lua_State *L)
 	if (state->sent_something)
 		return luaL_error(L, "Handler has already written header");
 	if (state->cancelled) {
-		/* Can't send anything, connection has been closed.
-		 * Returning Lua true because connection has already
+#ifdef SUPPORT_RETURN_FROM_WRITE
+		/* Returning Lua true because connection has already
 		 * been closed. */
 		lua_pushboolean(L, true);
 		return 1;
+#else /* SUPPORT_RETURN_FROM_WRITE */
+		return 0;
+#endif /* SUPPORT_RETURN_FROM_WRITE */
 	}
 
 	int is_integer;
@@ -816,9 +827,13 @@ perform_write_header(lua_State *L)
 	call_in_http_thr_postprocess_lua_req_first(shuttle);
 	wait_for_lua_shuttle_return(state);
 
+#ifdef SUPPORT_RETURN_FROM_WRITE
 	/* Returning Lua true if connection has already been closed. */
 	lua_pushboolean(L, state->cancelled);
 	return 1;
+#else /* SUPPORT_RETURN_FROM_WRITE */
+	return 0;
+#endif /* SUPPORT_RETURN_FROM_WRITE */
 }
 
 #ifdef SUPPORT_WEBSOCKETS

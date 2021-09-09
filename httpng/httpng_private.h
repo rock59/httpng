@@ -40,6 +40,8 @@ extern "C" {
 //#undef SUPPORT_FULL_WRITE_API
 #define SUPPORT_GRACEFUL_THR_TERMINATION
 //#undef SUPPORT_GRACEFUL_THR_TERMINATION
+#define SUPPORT_RETURN_FROM_WRITE
+//#undef SUPPORT_RETURN_FROM_WRITE
 
 /* When disabled, HTTP requests with body not fitting into shuttle are failed.
  * N. b.: h2o allocates memory for the WHOLE body in any case. */

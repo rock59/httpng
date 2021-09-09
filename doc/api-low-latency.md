@@ -26,13 +26,12 @@ from the Lua handler are implemented (at the moment sends are blocking).
 ### cfg table
 
 - `default_send_window`: Integer, specifies max number of `body` bytes
-in flight from HTTP(S) server to HTTP(S) client until `write*()` functions
+in flight from the handler to TCP/IP stack until `write*()` functions
 would block. Please note that it is not related to TCP window size.
 Defaults to 1048576.
 
-- `default_send_timeout`: Number, specifies a timeout in seconds for blocking
-`write*()` call to wait for a response from HTTP(S) server thread.
-Defaults to 1.
+- `default_send_timeout`: Number, specifies a timeout in seconds for
+`write*()` call to pass data to TCP/IP stack. Defaults to 30.
 
 ...
 
@@ -46,48 +45,42 @@ Defaults to 1.
 
 - `io`: Table with the following entries:
 ...
-  - `write_header(io, code, headers)`: function,
+  - `write_header(io, code, headers, timeout)`: function,
 ...
 Returns `nil` or `send_result` (see below).
+Note that you **MUST** check return value if it is not `nil` and timeout
+is not infinity because some data may not be sent in that case.
 ...
-  - `write_header_nb(io, code, headers)`: function,
-equivalent to `write_header()` but it never blocks
-(see `send_result` for details).
 
-  - `write(io, body)`: function,
+  - `write(io, body, timeout)`: function,
 ...
 Returns `nil` or `send_result` (see below).
+Note that you **MUST** check return value if it is not `nil` and timeout
+is not infinity because some data may not be sent in that case.
 ...
-
-  - `write_nb(io, body)`: function,
-equivalent to `write()` but it never blocks
-(see `send_result` for details).
 
   - `send_window`: Integer, specifies the max number of `body` bytes
 in flight from HTTP(S) server to HTTP(S) client until `write*()` functions
 would block. Please note that it is not related to TCP window size.
-Defaults to `default_send_window`.
+Can be nil, `default_send_window` is used in that case.
 
-  - `send_timeout`: Number, specifies a timeout in seconds for blocking
-`write*()` call to wait for a response from HTTP(S) server thread.
-Defaults to `default_send_timeout`.
+- `send_timeout`: Number, specifies a timeout in seconds for
+`write*()` call to pass data to TCP/IP stack.
+Used only if positional `timeout` parameter to `write*()` is not specified.
+Can be nil, `default_send_timeout` is used in that case.
 
   - `get_send_stats(io)`: function, returns `send_stats` table
 (see below).
 
-  - `block_until_remains(io, leftover, timeout)`: function, yield
-until `send_stats.current - send_stats.sent >= leftover`
+  - `wait(io, pos, timeout)`: function, yield
+until `send_stats.sent >= pos` (if `pos > 0`)
+or `send_stats.current - send_stats.sent >= -pos` (if `pos <= 0`)
 or `send_stats.cancelled == True` or `timeout` seconds passed.
-Returns `send_result`.
-
-  - `block_until_pos(io, pos, timeout)`: function, yield
-until `send_stats.sent >= pos` or `send_stats.cancelled == True`
-or `timeout` seconds passed.
 Returns `send_result`.
 
 #### Send result
 
-`write*()`/`block*()` functions can return an opaque value
+`write*()`/`wait()` functions can return an opaque value
 which we call `send_result` (for performance reasons it could be an Integer
 but you should not make any assumptions about that).
 You can use helper functions from `require 'httpng'` table
@@ -98,60 +91,55 @@ request processing by closing/resetting TCP connection (or just timing out)
 or in any other way. All further `write*()` to this request's `io` are silently
 ignored. User handler can use this information to avoid wasting server
 resources - it is recommended to free resources (if applicable) and return.
-- `timed_out(send_result)`: Returns Boolean,
-set to `True` if at least part of the `body`
-specified in this particular call to `write*()`
-has not been sent to the HTTP(S) client for `send_timeout` seconds.
-This part of the `body` will still be delivered to HTTP(S) client later
-(unless the request is cancelled [later]) - but please read a comment below.
-It is guaranteed to not be `True` if `cancelled(send_result)`
-to make handlers faster and simpler.
-`_nb` versions of functions never block so they can't time out.
-- `would_block(send_result)`: Returns Boolean,
-only `_nb` versions of functions can use that.
-`True` if an attempt to send data would block the caller's fiber
-(e. g. number of `body` bytes in flight plus length of `body` in this
-`write*()` call is larger than `send_window`)
-or would cause `body` data to be queued in TX
-because an earlier call has timed out.
-Nothing is sent to HTTP(S) client in this case. The caller of `_nb` versions
-of functions is expected to always handle `would_block(send_result) == True`.
-It is guaranteed to not be `True` if `cancelled(send_result)`
-to make handlers faster and simpler.
-
-Please note that `timed_out` is only set if this particular call to one of
-`write*()`/`block*()` functions was blocking and has timed out.
-`timed_out == False` does NOT mean that data has been sent to
-the HTTP(S) client.
-You can use `get_send_stats()` to determine that
-and measure timing according to your application needs.
+Call to this function with `nil` would return `nil`.
+- `headers_were_sent(send_result)`: Returns Boolean, `True` if `code`/`headers`
+specified in a call to `write_header()` were passed to TCP/IP stack.
+It is unspecified
+what this function would return when called with `send_result` from `write()`
+or `wait()`, it is allowed (but *not* guaranteed) to `error()` in such a case.
+Call to this function with `nil` would return `True`.
+- `body_bytes_sent(send_result)`: Returns Integer - how many bytes of `body`
+has been passed to TCP/IP stack. If it is less than the size of `body` specified,
+remaining bytes **ARE NOT SENT**. It is unspecified what this function
+would return when called with `send_result` from `wait()`, it is allowed
+(but **not** guaranteed) to `error()` in such a case.
+Call to this function with `nil` would `error()`.
 
 #### Send stats
 
 `get_send_stats()` returns table which we call `send_stats`.
-It contains the following members (note that indexes are 1-based):
- - `current`: Integer, number of `body` bytes passed to `write*()` functions.
- - `sent`: Integer, number of `body` bytes sent to the HTTP(S) client
+It contains the following members:
+ - `current`: Integer, number of `body` bytes passed to `write()`.
+ - `sent`: Integer, number of `body` bytes passed to TCP/IP stack.
 (note that some of them may still be "in flight" via network).
  - `cancelled`: Boolean, see `cancelled(send_result)` for a description.
+ - `headers_were_sent`: Boolean, `True` if `code`/`headers`
+were passed to TCP/IP stack (they may still be "in flight" via network).
 
 Example:
 ```
---- send_stats: current = 0, sent = 0
+io:send_timeout = 500 * 365 * 24 * 3600 -- Approx. 500 years
 
--- Sends status, headers and 3 bytes of body
-io:write_header(200, {['content-type'] = 'text/plain'}, 'abc')
+--- send_stats: current = 0, sent = 0, headers_were_sent = False
 
---- send_stats: current = 3, sent = 3
+-- Sends status, headers
+io:write_header(200, {['content-type'] = 'text/plain'})
+
+--- send_stats: current = 0, sent = 0, headers_were_sent = True
+
+-- Sends 3 bytes of body
+io:write('abc')
+
+--- send_stats: current = 3, sent = 3, headers_were_sent = True
 
 io:write('12345') -- Sends another 5 bytes of body but the call is blocking
                   -- or data is not yet delivered to HTTP thread or buffered
 
---- send_stats: current = 8, sent = 3
+--- send_stats: current = 8, sent = 3, headers_were_sent = True
 
 --- Some time has passed, data has been sent to the HTTP(S) client
 
---- send_stats: current = 8, sent = 8
+--- send_stats: current = 8, sent = 8, headers_were_sent = True
 
 ```
 Please note that it is not guaranteed that `sent` is updated
@@ -159,6 +147,6 @@ in the same chunks you send (it can be adjusted byte-by-byte
 or in any other step, including everything sent at once).
 
 You can implement any timeouts needed for your application by recording
-timestamps and `send_stats.current` before calling `write*()` and comparing it
+timestamps and `send_stats.current` before calling `write()` and comparing it
 to `send_stats.sent` whenever appropriate.
-You can use `block_*()` functions to efficiently wait for events.
+You can use `wait()` to efficiently wait for events.

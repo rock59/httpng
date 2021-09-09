@@ -1,4 +1,5 @@
 #include "openssl_utils.h"
+#include <h2o.h> /* For #if's */
 #include "httpng_config.h"
 #include <assert.h>
 

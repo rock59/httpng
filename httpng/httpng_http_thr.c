@@ -1,5 +1,8 @@
 #include "httpng_private.h"
 #include <h2o/serverutil.h>
+#ifndef USE_LIBUV
+#include <h2o/evloop_socket.h>
+#endif /* USE_LIBUV */
 #ifdef SUPPORT_WEBSOCKETS
 #include <h2o/websocket.h>
 #endif /* SUPPORT_WEBSOCKETS */

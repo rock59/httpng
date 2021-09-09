@@ -1,17 +1,11 @@
 #ifndef HTTPNG_PRIVATE_H
 #define HTTPNG_PRIVATE_H
 
-#ifdef USE_LIBUV
-#define H2O_USE_LIBUV 1
-#else
-#define H2O_USE_LIBUV 0
-#include <h2o/evloop_socket.h>
-#endif /* USE_LIBUV */
+#include "httpng_config.h"
 #include <h2o.h>
 
 #include <xtm/src/xtm_api.h>
 #include "httpng_sem.h"
-#include "httpng_config.h"
 
 #ifdef __cplusplus
 extern "C" {

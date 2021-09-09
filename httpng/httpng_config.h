@@ -51,4 +51,10 @@
 # endif /* SUPPORT_SHUTDOWN */
 #endif /* SUPPORT_GRACEFUL_THR_TERMINATION */
 
+#ifdef USE_LIBUV
+#define H2O_USE_LIBUV 1
+#else
+#define H2O_USE_LIBUV 0
+#endif /* USE_LIBUV */
+
 #endif /* HTTPNG_CONFIG_H */

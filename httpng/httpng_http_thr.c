@@ -1,6 +1,8 @@
 #include "httpng_private.h"
 #include <h2o/serverutil.h>
+#ifdef SUPPORT_WEBSOCKETS
 #include <h2o/websocket.h>
+#endif /* SUPPORT_WEBSOCKETS */
 #include "../third_party/h2o/deps/cloexec/cloexec.h"
 
 #include <fcntl.h>

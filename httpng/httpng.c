@@ -65,10 +65,10 @@ typedef void (fill_router_data_t)(struct lua_State *L, const char *path,
 
 #define STR_PORT_LENGTH 8
 
+#ifdef SUPPORT_C_HANDLERS
 /* Written directly into h2o_create_handler()->on_req. */
 typedef int (*req_handler_t)(h2o_handler_t *, h2o_req_t *);
 
-#ifdef SUPPORT_C_HANDLERS
 typedef int (*init_userdata_in_tx_t)(void *); /* Returns 0 on success. */
 
 typedef struct {

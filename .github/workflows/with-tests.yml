@@ -1,0 +1,102 @@
+name: Test buildability, then regressions
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master, void234/gh-231-initial-implementation ]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ['ubuntu-latest', 'macos-10.15', 'macos-11']
+        tarantool-ref: ['1.10', 'master']
+        build-type: ['Release', 'Debug']
+        enable_asan: [true, false]
+    runs-on: ${{matrix.os}}
+
+    steps:
+    - name: Where we are?
+      run: |
+        echo "OS:"
+        uname -a; cat /etc/os-release || cat /etc/issue || python -m platform || true
+        echo ""
+        echo "gcc:"
+        gcc --version || true
+        echo ""
+        echo "Clang:"
+        clang --version || true
+        echo ""
+        echo "ld:"
+        ld --version || true
+        echo ""
+        echo -n "OpenSSL: "
+        openssl version || true
+        echo ""
+        echo -n "brew: "
+        brew --version || true
+        echo ""
+        echo -n "shell: $SHELL"
+      shell: bash
+
+    - uses: actions/checkout@v2
+
+    - name: Checkout submodules
+      run: git submodule update --init --recursive
+
+    - name: Install third-party components on MacOS
+      run: if [ `uname` = Darwin ]; then brew install openssl@1.1 readline icu4c automake; fi
+
+    - name: Build and install Tarantool (with ASAN)
+      uses: ./.github/actions/build-tarantool
+      if: ${{matrix.enable_asan}}
+      with:
+        cc: 'clang'
+        cxx: 'clang++'
+        build-type: ${{matrix.build-type}}
+        cmake_defines: '-DENABLE_ASAN=ON'
+        ref: ${{matrix.tarantool-ref}}
+
+    - name: Build and install Tarantool (without ASAN)
+      uses: ./.github/actions/build-tarantool
+      if: ${{!matrix.enable_asan}}
+      with:
+        build-type: ${{matrix.build-type}}
+        ref: ${{matrix.tarantool-ref}}
+
+    - name: Build httpng (with ASAN)
+      uses: ./.github/actions/build-httpng
+      if: ${{matrix.enable_asan}}
+      with:
+        cc: 'clang'
+        cxx: 'clang++'
+        cmake_defines: '-DENABLE_ASAN=ON'
+        build-type: ${{matrix.build-type}}
+
+    - name: Build httpng (without ASAN)
+      uses: ./.github/actions/build-httpng
+      if: ${{!matrix.enable_asan}}
+      with:
+        build-type: ${{matrix.build-type}}
+
+    - name: Add entries to /etc/hosts
+      run: sudo tests/mangle_etc_hosts.sh
+
+    - name: Install luatest
+      working-directory: ${{github.workspace}}/build
+      # Ignore all errors (some are caused by ASAN in Tarantool)
+      run: ASAN_OPTIONS=detect_leaks=0 ${{github.workspace}}/build/tarantool/build/extra/dist/tarantoolctl rocks install luatest
+
+    - name: Test HTTPNG (luatest)
+      working-directory: ${{github.workspace}}
+      # FIXME: luatest doesn't understand neither absolute paths nor ".."!
+      # FIXME: Should enable Leak Sanitizer some day...
+      run: |
+        killall process_helper || true
+        ulimit -n 65536 || true
+        ulimit -u 4096 || true
+        ln ${{github.workspace}}/build/process_helper ${{github.workspace}}/
+        ASAN_OPTIONS=detect_leaks=0 LUA_CPATH="${{github.workspace}}/build/?.dylib;${{github.workspace}}/build/?.so" build/.rocks/bin/luatest -v -r 1 tests/all.lua --shuffle all
+      shell: bash

@@ -1,0 +1,33 @@
+title HTTPNG threads interaction concept ("return <response>")
+
+participant HTTP(S) worker thread
+
+
+participant [
+
+
+participant Per-request fiber
+
+
+participant TX (one of httpng fibers)
+
+[->HTTP(S) worker thread:HTTP(S) request from client
+box over HTTP(S) worker thread#yellow:Allocate `shuttle`
+box over HTTP(S) worker thread:Parse HTTP(S) request, pack it into `shuttle`
+HTTP(S) worker thread->TX (one of httpng fibers):`shuttle` with parsed HTTP(S) request
+note over HTTP(S) worker thread:Sleep or handle something else
+box over TX (one of httpng fibers):Create new fiber
+TX (one of httpng fibers)->*Per-request fiber:`shuttle`
+box over Per-request fiber:Fill in Lua table with request data
+rbox over Per-request fiber #green:<color:#white>Call user handler</color>
+box over Per-request fiber:Fill `shuttle` with response from Lua table
+HTTP(S) worker thread<-Per-request fiber:Send `shuttle` with response\n(with "close request" flag)
+note over Per-request fiber:Sleep until `shuttle` returns
+box over HTTP(S) worker thread:Format HTTP(S) response
+[<-HTTP(S) worker thread:HTTP(S) response to client
+HTTP(S) worker thread->TX (one of httpng fibers):"Request closed" notification
+Per-request fiber<-TX (one of httpng fibers):Wake sleeping fiber
+HTTP(S) worker thread<-Per-request fiber:Request to free `shuttle`
+abox over Per-request fiber:Exit fiber
+destroyafter Per-request fiber
+box over HTTP(S) worker thread #yellow:Free `shuttle`

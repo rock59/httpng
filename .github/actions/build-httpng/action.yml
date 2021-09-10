@@ -1,0 +1,22 @@
+
+name: 'Build httpng'
+description: 'Builds httpng from source'
+# 'inputs' is the GitHub Actions way to pass params from Workflows to Actions
+inputs:
+  cc:
+    default: gcc
+  cxx:
+    default: g++
+  cmake_defines:
+    required: false
+  build-type:
+    required: true
+runs:
+  using: "composite"
+  steps:
+    - run: |
+        echo "Building httpng as ${{inputs.build-type}}"
+        CC=${{inputs.cc}} CXX=${{inputs.cxx}} cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{inputs.build-type}} ${{inputs.cmake_defines}}
+        mkdir -p ${{github.workspace}}/build/httpng
+        cmake --build ${{github.workspace}}/build --config ${{inputs.build-type}}
+      shell: bash

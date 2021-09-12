@@ -111,7 +111,9 @@ typedef struct {
 #ifdef USE_SHUTTLES_MUTEX
 	pthread_mutex_t shuttles_mutex;
 #endif /* USE_SHUTTLES_MUTEX */
+#ifdef SUPPORT_CONN_LIST
 	h2o_linklist_t accepted_sockets;
+#endif /* SUPPORT_CONN_LIST */
 #ifdef SUPPORT_THR_TERMINATION
 	httpng_sem_t can_be_terminated;
 #endif /* SUPPORT_THR_TERMINATION */

@@ -1,8 +1,10 @@
 #include "httpng_private.h"
 #include <h2o/serverutil.h>
+#ifdef SUPPORT_CONN_LIST
 #ifndef USE_LIBUV
 #include <h2o/evloop_socket.h>
 #endif /* USE_LIBUV */
+#endif /* SUPPORT_CONN_LIST */
 #ifdef SUPPORT_WEBSOCKETS
 #include <h2o/websocket.h>
 #endif /* SUPPORT_WEBSOCKETS */
@@ -13,6 +15,7 @@
 
 #define container_of my_container_of
 
+#ifdef SUPPORT_CONN_LIST
 typedef struct {
 #ifdef USE_LIBUV
 	uv_tcp_t
@@ -22,6 +25,7 @@ typedef struct {
 		super;
 	h2o_linklist_t accepted_list;
 } our_sock_t;
+#endif /* SUPPORT_CONN_LIST */
 
 #ifdef SUPPORT_LISTEN
 #ifndef NDEBUG
@@ -745,8 +749,10 @@ prepare_shuttle2(h2o_req_t *req)
 static void
 on_underlying_socket_free(void *data)
 {
+#ifdef SUPPORT_CONN_LIST
 	h2o_linklist_unlink_fast(&my_container_of(data,
 		our_sock_t, super)->accepted_list);
+#endif /* SUPPORT_CONN_LIST */
 	thread_ctx_t *const thread_ctx = get_curr_thread_ctx();
 	--thread_ctx->num_connections;
 #ifdef USE_LIBUV
@@ -835,23 +841,35 @@ on_accept(h2o_socket_t *listener, const char *err)
 	do {
 		if (thread_ctx->num_connections >= conf.max_conn_per_thread)
 			break;
+#ifdef SUPPORT_CONN_LIST
 		struct st_h2o_evloop_socket_t *const sock =
 			h2o_evloop_socket_accept_ex(listener,
 				sizeof(our_sock_t));
+#else /* SUPPORT_CONN_LIST */
+		h2o_socket_t *const sock = h2o_evloop_socket_accept(listener);
+#endif /* SUPPORT_CONN_LIST */
 		if (sock == NULL)
 			return;
 
+#ifdef SUPPORT_CONN_LIST
 		our_sock_t *const item =
 			container_of(sock, our_sock_t, super);
 		h2o_linklist_insert_fast(&thread_ctx->accepted_sockets,
 			&item->accepted_list);
+#endif /* SUPPORT_CONN_LIST */
 
 		++thread_ctx->num_connections;
 
-		sock->super.on_close.cb = on_underlying_socket_free;
-		sock->super.on_close.data = sock;
+		h2o_socket_t *const h2o_sock =
+#ifdef SUPPORT_CONN_LIST
+			&sock->super;
+#else /* SUPPORT_CONN_LIST */
+			sock;
+#endif /* SUPPORT_CONN_LIST */
+		h2o_sock->on_close.cb = on_underlying_socket_free;
+		h2o_sock->on_close.data = sock;
 
-		h2o_accept(&listener_ctx->accept_ctx, &sock->super);
+		h2o_accept(&listener_ctx->accept_ctx, h2o_sock);
 	} while (--remain);
 }
 

@@ -2680,7 +2680,9 @@ init_worker_thread(unsigned thread_idx)
 		&thread_ctx->globalconf);
 #endif /* INIT_CTX_IN_HTTP_THREAD */
 #endif /* USE_LIBUV */
+#ifdef SUPPORT_CONN_LIST
 	h2o_linklist_init_anchor(&thread_ctx->accepted_sockets);
+#endif /* SUPPORT_CONN_LIST */
 
 	if (!prepare_listening_sockets(thread_ctx))
 		goto prepare_listening_sockets_failed;

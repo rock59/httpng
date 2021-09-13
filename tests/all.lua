@@ -1729,18 +1729,18 @@ local test_post = function(ver, use_tls)
         'localhost:3300', test)
 end
 
-g_good_handlers.test_post_http1_tls = function()
+g_good_handlers.test_post_http2_tls = function()
     test_post('--http2', true)
 end
 
-g_good_handlers.test_post_http2_tls = function()
+g_good_handlers.test_post_http1_tls = function()
     test_post('--http1.1', true)
 end
 
-g_good_handlers.test_post_http1_insecure = function()
+g_good_handlers.test_post_http2_insecure = function()
     test_post('--http2')
 end
 
-g_good_handlers.test_post_http2_insecure = function()
+g_good_handlers.test_post_http1_insecure = function()
     test_post('--http1.1')
 end

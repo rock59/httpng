@@ -1744,3 +1744,46 @@ end
 g_good_handlers.test_post_http1_insecure = function()
     test_post('--http1.1')
 end
+
+local req_headers_handler = function(req, io)
+    io:write('Headers:\n')
+    for k, v in pairs(req.headers) do
+        if (string.sub(k, 1, 2) == 'x-') then
+            io:write(k .. ': ' .. v .. '\n')
+        end
+    end
+end
+
+local test_req_headers = function(ver, use_tls)
+    local cfg = { handler = req_headers_handler }
+    local proto
+    if (use_tls) then
+        cfg.listen = listen_with_single_ssl_pair
+        proto = 'https'
+    else
+        proto = 'http'
+    end
+    my_http_cfg(cfg)
+
+    local test = 'The Matrix has you'
+    local h1 = 'x-short-test-header: x'
+    local h2 = 'x-long-test-header: There is no spoon'
+    check_site_content(ver .. ' -H "' .. h1 .. '" -H "' .. h2 .. '"', proto,
+        'localhost:3300', 'Headers:\n' .. h1 .. '\n' .. h2 .. '\n')
+end
+
+g_good_handlers.test_req_headers_http1_insecure = function()
+    test_req_headers('--http1.1')
+end
+
+g_good_handlers.test_req_headers_http2_insecure = function()
+    test_req_headers('--http2')
+end
+
+g_good_handlers.test_req_headers_http1_tls = function()
+    test_req_headers('--http1.1', true)
+end
+
+g_good_handlers.test_req_headers_http2_tls = function()
+    test_req_headers('--http2', true)
+end

@@ -34,6 +34,7 @@ static const char msg_cant_switch_ssl_ctx[] =
 #endif /* NDEBUG */
 #endif /* SUPPORT_LISTEN */
 
+#ifdef SUPPORT_CONN_LIST
 /* Launched in HTTP server thread. */
 static inline void
 h2o_linklist_insert_fast(h2o_linklist_t *pos, h2o_linklist_t *node)
@@ -51,6 +52,7 @@ h2o_linklist_unlink_fast(h2o_linklist_t *node)
     node->next->prev = node->prev;
     node->prev->next = node->next;
 }
+#endif /* SUPPORT_CONN_LIST */
 
 /* Launched in HTTP(S) server thread. */
 static inline void

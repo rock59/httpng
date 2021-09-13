@@ -169,12 +169,14 @@ is_nil_or_null(lua_State *L, int idx)
 	return lua_isnil(L, idx) || is_box_null(L, idx);
 }
 
+#ifdef SUPPORT_CONFIGURING_OPENSSL
 /* Launched in TX thread. */
 static inline bool
 lua_isstring_strict(lua_State *L, int idx)
 {
 	return lua_type(L, idx) == LUA_TSTRING;
 }
+#endif /* SUPPORT_CONFIGURING_OPENSSL */
 
 /* Launched in TX thread. */
 static inline void
@@ -311,6 +313,7 @@ call_in_http_thr_with_recv_data(recv_data_func_t *func, recv_data_t *recv_data)
 }
 #endif /* SHOULD_FREE_RECV_DATA_IN_HTTP_SERVER_THREAD */
 
+#ifdef SUPPORT_THR_TERMINATION
 /* Launched in TX thread. */
 static inline void
 call_in_http_thr_with_thread_ctx(thread_ctx_func_t *func,
@@ -318,6 +321,7 @@ call_in_http_thr_with_thread_ctx(thread_ctx_func_t *func,
 {
 	call_from_tx(thread_ctx->queue_from_tx, func, thread_ctx, thread_ctx);
 }
+#endif /* SUPPORT_THR_TERMINATION */
 
 /* Launched in HTTP server thread or in TX thread when
  * !SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD. */

@@ -347,7 +347,7 @@ local write_header_handler = function(req, io)
         pcall(io.upgrade_to_websocket, io)
     io._shuttle = saved_shuttle
 
-    write_first_header_ok, _ = io:write_header(200, nil, 'a', true)
+    write_first_header_ok, _ = pcall(io.write_header, io, 200)
     write_second_header_ok, write_second_header_err =
         pcall(io.write_header, io, 200)
 

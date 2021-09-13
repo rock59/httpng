@@ -410,9 +410,8 @@ local test_write_params = function(ver, use_tls)
     t.assert_str_matches(write_bad_shuttle_err, 'shuttle is invalid')
 
     t.assert(write_after_write_with_is_last_ok == false or
-        write_after_write_with_is_last_result ~= false,
+        write_after_write_with_is_last_err,
         'io:write() after io:write(is_last == true) should either error or return true')
-    --t.assert_str_matches(write_after_write_with_is_last_err, 'TODO')
 end
 
 g_bad_handlers.test_write_params_http1_insecure = function()

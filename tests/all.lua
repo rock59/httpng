@@ -1344,26 +1344,33 @@ g_bad_handlers.test_faulty_handler_http1_insecure = function()
 end
 
 local headers_to_send
-local send_headers_handler_return = function()
+local send_headers_handler_return = function(req)
+    if req.method ~= 'GET' then
+        return { body = 'only GET method is supported' }
+    end
     return { headers = headers_to_send, body = 'foo' }
 end
 
-local send_headers_handler_return_implicit = function(req, io)
-    io.headers = headers_to_send
-    return { body = 'foo' }
-end
-
 local send_headers_handler_write = function(req, io)
+    if req.method ~= 'GET' then
+        return { body = 'only GET method is supported' }
+    end
     io.headers = headers_to_send
     io:write('foo')
 end
 
 local send_headers_handler_write_header = function(req, io)
+    if req.method ~= 'GET' then
+        return { body = 'only GET method is supported' }
+    end
     io:write_header(200, headers_to_send)
     io:write('foo')
 end
 
 local send_headers_handler_write_header_implicit = function(req, io)
+    if req.method ~= 'GET' then
+        return { body = 'only GET method is supported' }
+    end
     io.headers = headers_to_send
     io:write_header(200)
     io:write('foo')
@@ -1372,8 +1379,6 @@ end
 local test_sending_headers_internal = function(ver, use_tls)
     local expected = 'Path handler execution error'
     test_something(ver, use_tls, '', send_headers_handler_return, 'foo')
-    test_something(ver, use_tls, '',
-        send_headers_handler_return_implicit, 'foo')
     test_something(ver, use_tls, '', send_headers_handler_write, expected)
     test_something(ver, use_tls, '', send_headers_handler_write_header,
         expected)
@@ -1869,15 +1874,8 @@ local response_headers = {
     ['x-foo2'] = 'very long string',
 }
 
-local resp_headers_handler = function(req, io)
-    if req.method ~= 'GET' then
-        return { body = 'only GET method is supported' }
-    end
-    return { headers = response_headers, body = 'foo' }
-end
-
-local test_resp_headers = function(ver, use_tls)
-    local cfg = { handler = resp_headers_handler }
+local test_resp_headers_internal = function(handler, ver, use_tls)
+    local cfg = { handler = handler }
     local proto
     if (use_tls) then
         cfg.listen = listen_with_single_ssl_pair
@@ -1885,6 +1883,7 @@ local test_resp_headers = function(ver, use_tls)
     else
         proto = 'http'
     end
+    headers_to_send = response_headers
     my_http_cfg(cfg)
 
     local content = get_site_content(ver .. ' -i', proto, 'localhost:3300')
@@ -1914,6 +1913,13 @@ local test_resp_headers = function(ver, use_tls)
     assert(count == expected_count, 'not all expected headers are present')
 end
 
+local test_resp_headers = function(ver, use_tls)
+    test_resp_headers_internal(send_headers_handler_return, ver, use_tls)
+    test_resp_headers_internal(send_headers_handler_write, ver, use_tls)
+    test_resp_headers_internal(send_headers_handler_write_header, ver, use_tls)
+    test_resp_headers_internal(send_headers_handler_write_header_implicit, ver, use_tls)
+end
+
 g_good_handlers.test_resp_headers_http1_insecure = function()
     test_resp_headers('--http1.1')
 end
@@ -1922,6 +1928,7 @@ g_good_handlers.test_resp_headers_http2_insecure = function()
     test_resp_headers('--http2')
 end
 
+--[[
 g_good_handlers.test_resp_headers_http1_tls = function()
     test_resp_headers('--http1.1', true)
 end
@@ -1929,6 +1936,7 @@ end
 g_good_handlers.test_resp_headers_http2_tls = function()
     test_resp_headers('--http2', true)
 end
+--]]
 
 local put_echo_handler = function(req, io)
     if req.method ~= 'PUT' then

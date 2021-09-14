@@ -1920,3 +1920,50 @@ end
 g_good_handlers.test_resp_headers_http2_tls = function()
     test_resp_headers('--http2', true)
 end
+
+local put_echo_handler = function(req, io)
+    return { body = req.body }
+end
+
+local test_put = function(ver, use_tls)
+    local cfg = { handler = put_echo_handler }
+    local proto
+    if (use_tls) then
+        cfg.listen = listen_with_single_ssl_pair
+        proto = 'https'
+    else
+        proto = 'http'
+    end
+    my_http_cfg(cfg)
+
+    local put = 'This is a payload'
+
+    local file = assert(io.open('tmp_put.bin', 'wb'))
+    assert(file ~= nil, "Can't create temp file")
+    file:write(put)
+    file:close()
+
+    local output = get_site_content(ver .. ' -T tmp_put.bin',
+        proto, 'localhost:3300')
+    os.remove('tmp_put.bin')
+    if (output ~= put) then
+        print('Expected: "' .. put .. '", actual: "' .. output .. '"')
+        assert(output == put, 'Got unexpected response from HTTP(S) server')
+    end
+end
+
+g_good_handlers.test_put_http1_insecure = function()
+    test_put('--http1.1')
+end
+
+g_good_handlers.test_put_http2_insecure = function()
+    test_put('--http2')
+end
+
+g_good_handlers.test_put_http1_tls = function()
+    test_put('--http1.1', true)
+end
+
+g_good_handlers.test_put_http2_tls = function()
+    test_put('--http2', true)
+end

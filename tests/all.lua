@@ -1987,3 +1987,43 @@ end
 g_good_handlers.test_put_http2_tls = function()
     test_put('--http2', true)
 end
+
+local chunked_handler = function(req, io)
+    if req.method ~= 'GET' then
+        return { body = 'only GET method is supported' }
+    end
+    io:write('1')
+    io:write('2')
+    io:write('3')
+    return { body = 'boom' }
+end
+
+local test_chunked = function(ver, use_tls)
+    local cfg = { handler = chunked_handler }
+    local proto
+    if (use_tls) then
+        cfg.listen = listen_with_single_ssl_pair
+        proto = 'https'
+    else
+        proto = 'http'
+    end
+    my_http_cfg(cfg)
+
+    check_site_content(ver, proto, 'localhost:3300', '123boom')
+end
+
+g_good_handlers.test_chunked_http1_insecure = function()
+    test_chunked('--http1.1')
+end
+
+g_good_handlers.test_chunked_http2_insecure = function()
+    test_chunked('--http2')
+end
+
+g_good_handlers.test_chunked_http1_tls = function()
+    test_chunked('--http1.1', true)
+end
+
+g_good_handlers.test_chunked_http2_tls = function()
+    test_chunked('--http2', true)
+end

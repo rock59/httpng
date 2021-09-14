@@ -104,6 +104,8 @@ __thread thread_ctx_t *curr_thread_ctx;
 static uint32_t box_null_cdata_type;
 
 static const char shuttle_field_name[] = "_shuttle";
+static const char headers_not_table_msg[] = "headers is not a table";
+static const char headers_invalid_msg[] = "headers are invalid";
 #ifdef SUPPORT_RECONFIG
 static const char msg_cant_reap[] =
 	"Unable to reconfigure until threads will shut down";
@@ -119,7 +121,7 @@ static const char msg_bad_cert_num[] =
 	"Only one key/certificate pair can be specified if SNI is disabled";
 #endif /* SUPPORT_LISTEN */
 
-static void fill_http_headers(lua_State *L, lua_handler_state_t *state,
+static bool fill_http_headers(lua_State *L, lua_handler_state_t *state,
 	int param_lua_idx);
 
 #ifdef SUPPORT_SHUTDOWN
@@ -678,7 +680,11 @@ perform_write(lua_State *L)
 
 		lua_getfield(L, LUA_STACK_IDX_SELF, "headers");
 		const unsigned headers_lua_index = num_params + 1 + 1;
-		fill_http_headers(L, state, headers_lua_index);
+		if (!lua_isnil(L, headers_lua_index) &&
+		    !lua_istable(L, headers_lua_index))
+			return luaL_error(L, headers_not_table_msg);
+		if (!fill_http_headers(L, state, headers_lua_index))
+			return luaL_error(L, headers_invalid_msg);
 
 		state->sent_something = true;
 		call_in_http_thr_postprocess_lua_req_first(shuttle);
@@ -696,15 +702,24 @@ perform_write(lua_State *L)
 }
 
 /* Launched in TX thread. */
-static void
+static bool
 fill_http_headers(lua_State *L, lua_handler_state_t *state, int param_lua_idx)
 {
 	state->un.resp.first.content_length = H2O_CONTENT_LENGTH_UNSPECIFIED;
 	if (lua_isnil(L, param_lua_idx))
-		return;
+		return true;
 
 	lua_pushnil(L); /* Start of table. */
 	while (lua_next(L, param_lua_idx)) {
+		if (!lua_isstring_strict(L, -2)) {
+			/* Can't use lua_tolstring(), it can convert
+			 * e. g. number to string and lua_next()
+			 * would assert.
+			 * There is no point sending invalid headers anyway. */
+			lua_pop(L, 2);
+			return false;
+		}
+
 		size_t key_len;
 		size_t value_len;
 		const char *const key = lua_tolstring(L, -2, &key_len);
@@ -735,6 +750,7 @@ fill_http_headers(lua_State *L, lua_handler_state_t *state, int param_lua_idx)
 		/* Remove value, keep key for next iteration. */
 		lua_pop(L, 1);
 	}
+	return true;
 }
 
 /* Launched in TX thread */
@@ -814,7 +830,12 @@ perform_write_header(lua_State *L)
 		lua_getfield(L, LUA_STACK_IDX_SELF, "headers");
 		headers_lua_index = num_params + 1 + 1;
 	}
-	fill_http_headers(L, state, headers_lua_index);
+
+	if (!lua_isnil(L, headers_lua_index) &&
+	    !lua_istable(L, headers_lua_index))
+		return luaL_error(L, headers_not_table_msg);
+	if (!fill_http_headers(L, state, headers_lua_index))
+		return luaL_error(L, headers_invalid_msg);
 
 #ifdef SUPPORT_FULL_WRITE_API
 	if (num_params >= LUA_STACK_IDX_PAYLOAD) {
@@ -1361,7 +1382,9 @@ process_handler_success_not_ws_with_send(lua_State *L, shuttle_t *shuttle)
 					get_default_http_code(state);
 		}
 		lua_getfield(L, -2, "headers");
-		fill_http_headers(L, state, lua_gettop(L));
+		const int idx = lua_gettop(L);
+		if (lua_istable(L, idx))
+			fill_http_headers(L, state, idx);
 		lua_pop(L, 2); /* headers, status. */
 		state->sent_something = true;
 	}

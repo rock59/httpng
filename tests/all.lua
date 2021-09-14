@@ -1334,6 +1334,71 @@ g_bad_handlers.test_faulty_handler_http1_insecure = function()
     test_faulty_handler('--http1.1')
 end
 
+local headers_to_send
+local send_headers_handler_return = function()
+    return { headers = headers_to_send, body = 'foo' }
+end
+
+local send_headers_handler_return_implicit = function(req, io)
+    io.headers = headers_to_send
+    return { body = 'foo' }
+end
+
+local send_headers_handler_write = function(req, io)
+    io.headers = headers_to_send
+    io:write('foo')
+end
+
+local send_headers_handler_write_header = function(req, io)
+    io:write_header(200, headers_to_send)
+    io:write('foo')
+end
+
+local send_headers_handler_write_header_implicit = function(req, io)
+    io.headers = headers_to_send
+    io:write_header(200)
+    io:write('foo')
+end
+
+local test_sending_headers_internal = function(ver, use_tls)
+    local expected = 'Path handler execution error'
+    test_something(ver, use_tls, '', send_headers_handler_return, 'foo')
+    test_something(ver, use_tls, '',
+        send_headers_handler_return_implicit, 'foo')
+    test_something(ver, use_tls, '', send_headers_handler_write, expected)
+    test_something(ver, use_tls, '', send_headers_handler_write_header,
+        expected)
+    test_something(ver, use_tls, '',
+        send_headers_handler_write_header_implicit, expected)
+end
+
+local test_sending_headers = function(ver, use_tls)
+    headers_to_send = 'bad'
+    test_sending_headers_internal(ver, use_tls)
+    headers_to_send = { 'bad' }
+    test_sending_headers_internal(ver, use_tls)
+    headers_to_send = { { 'worse' } }
+    test_sending_headers_internal(ver, use_tls)
+end
+
+g_bad_handlers.test_sending_headers_http1_insecure = function()
+    test_sending_headers('--http1.1')
+end
+
+g_bad_handlers.test_sending_headers_http2_insecure = function()
+    test_sending_headers('--http2')
+end
+
+--[[
+g_bad_handlers.test_sending_headers_http1_tls = function()
+    test_sending_headers('--http1.1', true)
+end
+
+g_bad_handlers.test_sending_headers_http2_tls = function()
+    test_sending_headers('--http2', true)
+end
+--]]
+
 g_hot_reload.test_min_proto = function()
     local cfg = { handler = function() end, min_proto_version = 'tls1.2'}
     http.cfg(cfg)

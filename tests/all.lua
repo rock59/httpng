@@ -559,7 +559,7 @@ local check_http_version_handler = function(req, io)
     return {body = 'foo'}
 end
 
-local check_site_content = function(extra, proto, location, str, timeout)
+local get_site_content = function(extra, proto, location, str, timeout)
     ensure_popen()
     local target
     if using_popen() then
@@ -592,6 +592,12 @@ local check_site_content = function(extra, proto, location, str, timeout)
         output = file:read('*a')
         file:close()
     end
+
+	return output
+end
+
+local check_site_content = function(extra, proto, location, str, timeout)
+	local output = get_site_content(extra, proto, location, timeout)
 
     if (output ~= str) then
         print('Expected: "'..str..'", actual: "'..output..'"')
@@ -1830,7 +1836,6 @@ local test_req_headers = function(ver, use_tls)
     end
     my_http_cfg(cfg)
 
-    local test = 'The Matrix has you'
     local h1 = 'x-short-test-header: x'
     local h2 = 'x-long-test-header: There is no spoon'
     check_site_content(ver .. ' -H "' .. h1 .. '" -H "' .. h2 .. '"', proto,
@@ -1851,4 +1856,67 @@ end
 
 g_good_handlers.test_req_headers_http2_tls = function()
     test_req_headers('--http2', true)
+end
+
+local response_headers = {
+    ['x-foo1'] = 'bar',
+    ['x-foo2'] = 'very long string',
+}
+
+local resp_headers_handler = function(req, io)
+    return { headers = response_headers, body = 'foo' }
+end
+
+local test_resp_headers = function(ver, use_tls)
+    local cfg = { handler = resp_headers_handler }
+    local proto
+    if (use_tls) then
+        cfg.listen = listen_with_single_ssl_pair
+        proto = 'https'
+    else
+        proto = 'http'
+    end
+    my_http_cfg(cfg)
+
+    local content = get_site_content(ver .. ' -i', proto, 'localhost:3300')
+    local lines = {}
+    for s in content:gmatch("[^\r\n]+") do
+        table.insert(lines, s)
+    end
+
+    local found = {}
+    local count = 0
+    for _, s in ipairs(lines) do
+        local k, v = string.match(s, "([0-9a-zA-Z%-]+): (.*)")
+        if k then
+            if response_headers[k] then
+                assert(not found[k], 'duplicated header detected')
+                found[k] = true
+                count = count + 1
+                assert(response_headers[k] == v, 'header is corrupted')
+            end
+        end
+    end
+
+    local expected_count = 0
+    for _ in pairs(response_headers) do
+        expected_count = expected_count + 1
+    end
+    assert(count == expected_count, 'not all expected headers are present')
+end
+
+g_good_handlers.test_resp_headers_http1_insecure = function()
+    test_resp_headers('--http1.1')
+end
+
+g_good_handlers.test_resp_headers_http2_insecure = function()
+    test_resp_headers('--http2')
+end
+
+g_good_handlers.test_resp_headers_http1_tls = function()
+    test_resp_headers('--http1.1', true)
+end
+
+g_good_handlers.test_resp_headers_http2_tls = function()
+    test_resp_headers('--http2', true)
 end

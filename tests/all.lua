@@ -541,6 +541,9 @@ local empty_handler3 = function(req, io)
 end
 
 local post_handler = function(req, io)
+    if req.method ~= 'POST' then
+        return { body = 'only POST method is supported' }
+    end
     return { body = req.body }
 end
 
@@ -1817,6 +1820,9 @@ g_good_handlers.test_post_http1_insecure = function()
 end
 
 local req_headers_handler = function(req, io)
+    if req.method ~= 'GET' then
+        return { body = 'only GET method is supported' }
+    end
     io:write('Headers:\n')
     for k, v in pairs(req.headers) do
         if (string.sub(k, 1, 2) == 'x-') then
@@ -1864,6 +1870,9 @@ local response_headers = {
 }
 
 local resp_headers_handler = function(req, io)
+    if req.method ~= 'GET' then
+        return { body = 'only GET method is supported' }
+    end
     return { headers = response_headers, body = 'foo' }
 end
 
@@ -1922,6 +1931,9 @@ g_good_handlers.test_resp_headers_http2_tls = function()
 end
 
 local put_echo_handler = function(req, io)
+    if req.method ~= 'PUT' then
+        return { body = 'only PUT method is supported' }
+    end
     return { body = req.body }
 end
 

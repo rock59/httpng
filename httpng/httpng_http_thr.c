@@ -1,10 +1,5 @@
 #include "httpng_private.h"
 #include <h2o/serverutil.h>
-#ifdef SUPPORT_CONN_LIST
-#ifndef USE_LIBUV
-#include <h2o/evloop_socket.h>
-#endif /* USE_LIBUV */
-#endif /* SUPPORT_CONN_LIST */
 #ifdef SUPPORT_WEBSOCKETS
 #include <h2o/websocket.h>
 #endif /* SUPPORT_WEBSOCKETS */
@@ -17,14 +12,16 @@
 
 #ifdef SUPPORT_CONN_LIST
 typedef struct {
-#ifdef USE_LIBUV
-	uv_tcp_t
-#else /* USE_LIBUV */
-	struct st_h2o_evloop_socket_t
-#endif /* USE_LIBUV */
-		super;
 	h2o_linklist_t accepted_list;
+} our_sock_ext_t;
+
+#ifdef USE_LIBUV
+typedef struct {
+	uv_tcp_t super;
+	our_sock_ext_t ext;
 } our_sock_t;
+#endif /* USE_LIBUV */
+
 #endif /* SUPPORT_CONN_LIST */
 
 #ifdef SUPPORT_LISTEN
@@ -752,8 +749,13 @@ static void
 on_underlying_socket_free(void *data)
 {
 #ifdef SUPPORT_CONN_LIST
+#ifdef USE_LIBUV
 	h2o_linklist_unlink_fast(&my_container_of(data,
-		our_sock_t, super)->accepted_list);
+		our_sock_t, super)->ext.accepted_list);
+#else /* USE_LIBUV */
+	h2o_linklist_unlink_fast(&((our_sock_ext_t *)
+		h2o_evloop_socket_extra(data))->accepted_list);
+#endif /* USE_LIBUV */
 #endif /* SUPPORT_CONN_LIST */
 	thread_ctx_t *const thread_ctx = get_curr_thread_ctx();
 	--thread_ctx->num_connections;
@@ -817,7 +819,7 @@ on_accept(uv_stream_t *uv_listener, int status)
 	}
 
 	h2o_linklist_insert_fast(&thread_ctx->accepted_sockets,
-		&conn->accepted_list);
+		&conn->ext.accepted_list);
 	++thread_ctx->num_connections;
 
 	listener_ctx_t *const listener_ctx =
@@ -845,8 +847,8 @@ on_accept(h2o_socket_t *listener, const char *err)
 			break;
 #ifdef SUPPORT_CONN_LIST
 		struct st_h2o_evloop_socket_t *const sock =
-			h2o_evloop_socket_accept_ex(listener,
-				sizeof(our_sock_t));
+			h2o_evloop_socket_accept_ex2(listener,
+				sizeof(our_sock_ext_t));
 #else /* SUPPORT_CONN_LIST */
 		h2o_socket_t *const sock = h2o_evloop_socket_accept(listener);
 #endif /* SUPPORT_CONN_LIST */
@@ -854,8 +856,7 @@ on_accept(h2o_socket_t *listener, const char *err)
 			return;
 
 #ifdef SUPPORT_CONN_LIST
-		our_sock_t *const item =
-			container_of(sock, our_sock_t, super);
+		our_sock_ext_t *const item = h2o_evloop_socket_extra(sock);
 		h2o_linklist_insert_fast(&thread_ctx->accepted_sockets,
 			&item->accepted_list);
 #endif /* SUPPORT_CONN_LIST */
@@ -864,7 +865,7 @@ on_accept(h2o_socket_t *listener, const char *err)
 
 		h2o_socket_t *const h2o_sock =
 #ifdef SUPPORT_CONN_LIST
-			&sock->super;
+			h2o_socket_from_evloop_socket(sock);
 #else /* SUPPORT_CONN_LIST */
 			sock;
 #endif /* SUPPORT_CONN_LIST */
@@ -977,17 +978,18 @@ call_in_tx_finish_processing_lua_reqs(thread_ctx_t *thread_ctx)
 #ifdef SUPPORT_THR_TERMINATION
 /* Launched in HTTP server thread. */
 static inline void
-tell_close_connection(our_sock_t *item)
+tell_close_connection(our_sock_ext_t *item)
 {
 #ifdef USE_LIBUV
-	struct st_h2o_uv_socket_t *const uv_sock = item->super.data;
+	struct st_h2o_uv_socket_t *const uv_sock =
+		container_of(item, our_sock_t, ext)->super.data;
 
 	/* This is not really safe (st_h2o_uv_socket_t can be changed
 	 * so h2o_socket_t is no longer first member - unlikely but possible)
 	 * but the alternative is to include A LOT of h2o internal headers. */
 	h2o_socket_t *const sock = (h2o_socket_t *)uv_sock;
 #else /* USE_LIBUV */
-	h2o_socket_t *const sock = &item->super.super;
+	h2o_socket_t *const sock = h2o_socket_from_extra(item);
 #endif /* USE_LIBUV */
 	h2o_close_working_socket(sock);
 }
@@ -998,12 +1000,13 @@ tell_close_connection(our_sock_t *item)
 static inline void
 close_existing_connections(thread_ctx_t *thread_ctx)
 {
-	our_sock_t *item =
+	our_sock_ext_t *item =
 		container_of(thread_ctx->accepted_sockets.next,
-			our_sock_t, accepted_list);
+			our_sock_ext_t, accepted_list);
 	while (&item->accepted_list != &thread_ctx->accepted_sockets) {
-		our_sock_t *const next = container_of(item->accepted_list.next,
-			our_sock_t, accepted_list);
+		our_sock_ext_t *const next =
+			container_of(item->accepted_list.next,
+			our_sock_ext_t, accepted_list);
 		tell_close_connection(item);
 		item = next;
 	}

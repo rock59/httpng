@@ -2027,3 +2027,104 @@ end
 g_good_handlers.test_chunked_http2_tls = function()
     test_chunked('--http2', true)
 end
+
+local content_length_handler_explicit = function(req, io)
+    if req.method ~= 'GET' then
+        return { body = 'only GET method is supported' }
+    end
+    io.headers = { ['Content-Length'] = 6 }
+    io:write('foo')
+    return { body = 'bar' }
+end
+
+local content_length_handler_implicit = function(req, io)
+    if req.method ~= 'GET' then
+        return { body = 'only GET method is supported' }
+    end
+    return { body = 'foobar' }
+end
+
+local test_content_length_internal = function(handler, ver, use_tls)
+    local cfg = { handler = handler }
+    local proto
+    if (use_tls) then
+        cfg.listen = listen_with_single_ssl_pair
+        proto = 'https'
+    else
+        proto = 'http'
+    end
+    my_http_cfg(cfg)
+
+    local content = get_site_content(ver .. ' -i', proto, 'localhost:3300')
+    local lines = {}
+    for s in content:gmatch("[^\r\n]+") do
+        table.insert(lines, s)
+    end
+
+    local found = {}
+    local count = 0
+    local found = false
+    local headers_found = false
+    local remainder = nil
+    for _, s in ipairs(lines) do
+        local k, v = string.match(s, "([0-9a-zA-Z%-]+): (.*)")
+        if k ~= nil and string.lower(k) == 'content-length' then
+            assert(not found)
+            found = true
+            assert(v == '6', 'Content-Length is invalid')
+        else
+            if k == nil then
+                if headers_found then
+                    remainder = s
+                    goto done
+                end
+            else
+                headers_found = true
+            end
+        end
+    end
+
+::done::
+    assert(remainder == 'foobar', 'Body is broken')
+    assert(found, 'No Content-Length header found')
+end
+
+local test_content_length_explicit = function(ver, use_tls)
+    test_content_length_internal(content_length_handler_explicit, ver, use_tls)
+end
+
+local test_content_length_implicit = function(ver, use_tls)
+    test_content_length_internal(content_length_handler_implicit, ver, use_tls)
+end
+
+g_good_handlers.test_content_length_explicit_http1_tls = function()
+    test_content_length_explicit('--http1.1', true)
+end
+
+g_good_handlers.test_content_length_explicit_http2_tls = function()
+    test_content_length_explicit('--http2', true)
+end
+
+g_good_handlers.test_content_length_explicit_http1_insecure = function()
+    test_content_length_explicit('--http1.1')
+end
+
+g_good_handlers.test_content_length_explicit_http2_insecure = function()
+    test_content_length_explicit('--http2 --http2-prior-knowledge')
+end
+
+g_good_handlers.test_content_length_implicit_http1_tls = function()
+    test_content_length_implicit('--http1.1', true)
+end
+
+g_good_handlers.test_content_length_implicit_http2_tls = function()
+    test_content_length_implicit('--http2', true)
+end
+
+g_good_handlers.test_content_length_implicit_http1_insecure = function()
+    test_content_length_implicit('--http1.1')
+end
+
+g_good_handlers.test_content_length_implicit_http2_insecure = function()
+    test_content_length_implicit('--http2 --http2-prior-knowledge')
+end

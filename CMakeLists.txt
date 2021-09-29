@@ -84,7 +84,7 @@ add_subdirectory(third_party/xtm EXCLUDE_FROM_ALL)
 #set(HTTPNG_USE_LIBUV ON)
 
 include_directories(${LUAJIT_INCLUDE_DIRS})
-set("CMAKE_C_FLAGS" "${CMAKE_C_FLAGS} -Wall -Werror")
+add_compile_options("-Wall" "-Werror")
 
 if (HTTPNG_USE_LIBUV)
     add_definitions(-DUSE_LIBUV)
@@ -96,16 +96,16 @@ set(HEADERS ${HEADERS} httpng/openssl_utils.h)
 
 #set_source_files_properties(httpng/httpng.c PROPERTIES LANGUAGE CXX)
 #set_source_files_properties(httpng/router.c PROPERTIES LANGUAGE CXX)
-set (HTTPNG_C_SRC
-                  httpng/httpng.c
-                  httpng/httpng_http_thr.c
-                  httpng/openssl_utils.c
+set (HTTPNG_C_SRC httpng/httpng.c
+    httpng/httpng_http_thr.c
+    httpng/openssl_utils.c
 )
 
 set(HTTPNG_SRC ${HTTPNG_C_SRC} ${HEADERS})
 
 build_module(httpng_c "${HTTPNG_SRC}")
 build_module(test_helpers httpng/test_helpers.c)
+target_compile_options(test_helpers PRIVATE "-Wextra")
 if (BUILD_C_ROUTER)
     build_module(router "httpng/router.c")
     set_target_properties(router PROPERTIES OUTPUT_NAME ${CMAKE_CURRENT_BINARY_DIR}/httpng/router_c)
@@ -159,6 +159,7 @@ install(FILES httpng.lua DESTINATION ${TARANTOOL_INSTALL_LUADIR})
 
 add_executable(process_helper httpng/process_helper.c)
 set_target_properties(process_helper PROPERTIES OUTPUT_NAME ${CMAKE_CURRENT_SOURCE_DIR}/tests/process_helper)
+target_compile_options(process_helper PRIVATE "-Wextra")
 
 add_custom_target(test COMMAND "$ENV{SHELL}" "-c" "${CMAKE_CURRENT_SOURCE_DIR}/tests/tests_helper.sh")
 add_dependencies(test test_helpers)

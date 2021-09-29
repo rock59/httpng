@@ -600,7 +600,7 @@ local get_site_content = function(extra, proto, location, str, timeout)
 end
 
 local check_site_content = function(extra, proto, location, str, timeout)
-	local output = get_site_content(extra, proto, location, timeout)
+    local output = get_site_content(extra, proto, location, timeout)
 
     if (output ~= str) then
         print('Expected: "'..str..'", actual: "'..output..'"')

@@ -88,6 +88,7 @@ retry_send:
 	pid_t code;
 	static const int max_total_usecs = 1000 * 1000;
 	static const int iteration_usecs = 1000;
+	const float iteration_secs = iteration_usecs / (1000 * 1000);
 	int recv_retry_count = max_total_usecs / iteration_usecs;
 	/* FIXME: Handle EINTR at least? */
 retry_recv:
@@ -95,7 +96,7 @@ retry_recv:
 	    (ssize_t)sizeof(code)) {
 		if (ECONNRESET == errno && --recv_retry_count != 0) {
 			/* That's ugly kludge. */
-			usleep(iteration_usecs);
+			fiber_sleep(iteration_secs);
 			goto retry_recv;
 		}
 		perror("recv() from process_helper failed");

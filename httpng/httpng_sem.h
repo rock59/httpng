@@ -2,6 +2,7 @@
 #define HTTPNG_SEM_H
 
 #include <errno.h>
+#include <stdint.h>
 
 #ifdef __APPLE__
 #include <dispatch/dispatch.h>

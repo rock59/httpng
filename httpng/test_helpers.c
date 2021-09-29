@@ -82,12 +82,13 @@ retry_send:
 		goto error_cant_send;
 	}
 	bytes_already_sent += bytes_sent;
-	if (bytes_already_sent < sizeof(req))
+	if (bytes_already_sent < (ssize_t)sizeof(req))
 		goto retry_send;
 
 	pid_t code;
 	/* FIXME: Handle EINTR at least? */
-	if (recv(reaper_client_fd, &code, sizeof(code), 0) < sizeof(code)) {
+	if (recv(reaper_client_fd, &code, sizeof(code), 0) <
+	    (ssize_t)sizeof(code)) {
 		perror("recv() from process_helper failed");
 		lerr = "recv() from process_helper failed";
 		goto error_cant_recv;

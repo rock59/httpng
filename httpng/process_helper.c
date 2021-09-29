@@ -139,7 +139,7 @@ retry_recv:
 		goto fail;
 	}
 	already_received += received;
-	if (already_received < sizeof(req))
+	if (already_received < (ssize_t)sizeof(req))
 		goto retry_recv;
 
 	switch (req.type) {
@@ -249,7 +249,7 @@ retry_send:
 		goto fallback_to_simple;
 	}
 	bytes_already_sent += bytes_sent;
-	if (bytes_already_sent < sizeof(req))
+	if (bytes_already_sent < (ssize_t)sizeof(req))
 		goto retry_send;
 
 	pid_t pid;

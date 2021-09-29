@@ -170,10 +170,8 @@ launch_reaper_server(void)
 	/* FIXME: Drop root (to which UID)? Refuse to work under root? */
 	server_launched = true;
 	const int res = fork();
-	if (res > 0) {
-		sleep(1); /* Stopgap. */
+	if (res > 0)
 		return 0;
-	}
 	if (res < 0)
 		return -2;
 	serve();

@@ -11,8 +11,7 @@
 
 static struct sockaddr_un reaper_addr;
 
-/* Launched in TX thread.
- * Actually this function can be moved to another module. */
+/* Launched in TX thread. */
 static int
 debug_wait_process(lua_State *L)
 {

@@ -86,9 +86,16 @@ retry_send:
 		goto retry_send;
 
 	pid_t code;
+	int recv_retry_count = 10;
 	/* FIXME: Handle EINTR at least? */
+retry_recv:
 	if (recv(reaper_client_fd, &code, sizeof(code), 0) <
 	    (ssize_t)sizeof(code)) {
+		if (ECONNRESET == errno && --recv_retry_count != 0) {
+			/* That's ugly kludge. */
+			usleep(10 * 1000);
+			goto retry_recv;
+		}
 		perror("recv() from process_helper failed");
 		lerr = "recv() from process_helper failed";
 		goto error_cant_recv;

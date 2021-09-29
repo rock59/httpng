@@ -90,6 +90,7 @@ retry_send:
 	static const int iteration_usecs = 1000;
 	const float iteration_secs = iteration_usecs / (1000 * 1000);
 	int recv_retry_count = max_total_usecs / iteration_usecs;
+	const int initial_count = recv_retry_count;
 	/* FIXME: Handle EINTR at least? */
 retry_recv:
 	if (recv(reaper_client_fd, &code, sizeof(code), 0) <
@@ -99,7 +100,12 @@ retry_recv:
 			fiber_sleep(iteration_secs);
 			goto retry_recv;
 		}
-		perror("recv() from process_helper failed");
+		char buf[128];
+		snprintf(buf, sizeof(buf),
+			"recv() from process_helper failed, "
+			"%d attempts %d usecs each",
+			initial_count, iteration_usecs);
+		perror(buf);
 		lerr = "recv() from process_helper failed";
 		goto error_cant_recv;
 	}

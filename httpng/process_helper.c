@@ -9,6 +9,18 @@
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+/* This is a security nightmare, do NOT use in production,
+ * this is a set of kludges to run tests on old Tarantool versions
+ * in a sandbox. */
+
+typedef enum {
+	LAUNCH_REAPER_SUCCESS = 0,
+	LAUNCH_REAPER_ALREADY_LAUNCHED = 1,
+	LAUNCH_REAPER_FORK_FAILED = 2,
+	LAUNCH_REAPER_UNDEF = 100,
+} launch_reaper_e;
+
 extern char **environ;
 
 static struct sockaddr_un addr = {
@@ -161,22 +173,24 @@ fail:
 	close(srv_fd);
 }
 
-static int
+static launch_reaper_e
 launch_reaper_server(void)
 {
 	if (server_launched)
-		return -1;
+		return LAUNCH_REAPER_ALREADY_LAUNCHED;
 	unlink(addr.sun_path);
 	/* FIXME: Drop root (to which UID)? Refuse to work under root? */
 	server_launched = true;
 	const int res = fork();
 	if (res > 0)
-		return 0;
+		return LAUNCH_REAPER_SUCCESS;
 	if (res < 0)
-		return -2;
+		return LAUNCH_REAPER_FORK_FAILED;
+
+	/* This is child process. */
 	serve();
 	assert(false);
-	return 0;
+	return LAUNCH_REAPER_UNDEF;
 }
 
 static inline bool
@@ -188,6 +202,7 @@ must_be_quoted(const char *str)
 int
 main(int argc, char *argv[])
 {
+	int connect_attempts_remain = 1000;
 	process_helper_req_t req;
 #define long_str req.str
 	size_t total_len = 0;
@@ -220,14 +235,23 @@ retry_socket:
 	;
 	const int reaper_client_fd = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (reaper_client_fd < 0) {
-		if (launch_reaper_server() != 0)
+		if (launch_reaper_server() != LAUNCH_REAPER_SUCCESS)
 			goto fallback_to_simple;
 		goto retry_socket;
 	}
+
 retry_connect:
 	if (connect(reaper_client_fd, (struct sockaddr *)&addr,
 	    sizeof(addr)) < 0) {
-		if (launch_reaper_server() != 0) {
+		const launch_reaper_e res = launch_reaper_server();
+		if (res != LAUNCH_REAPER_SUCCESS) {
+			if (res == LAUNCH_REAPER_ALREADY_LAUNCHED) {
+				/* It is not ready to serve requests yet. */
+				if (--connect_attempts_remain != 0) {
+					usleep(1000);
+					goto retry_connect;
+				}
+			}
 			close(reaper_client_fd);
 			goto fallback_to_simple;
 		}

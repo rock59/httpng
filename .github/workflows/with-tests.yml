@@ -12,14 +12,14 @@ jobs:
       fail-fast: false
       matrix:
         os: ['ubuntu-latest', 'macos-10.15', 'macos-11']
-        tarantool-ref: ['1.10.11', '2.7.3']
+        tarantool-ref: ['1.10.11', '2.8.2']
         build-type: ['Release', 'Debug']
         enable_asan: [true, false]
         exclude:
           - os: 'macos-10.15'
-            tarantool-ref: '1.10'
+            tarantool-ref: '1.10.11'
           - os: 'macos-11'
-            tarantool-ref: '1.10'
+            tarantool-ref: '1.10.11'
     runs-on: ${{matrix.os}}
 
     steps:

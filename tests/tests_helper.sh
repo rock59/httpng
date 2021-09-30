@@ -1,3 +1,5 @@
+#!/usr/bin/bash
+
 if [ -e .rocks/bin/luatest ]; then
 	true
 else

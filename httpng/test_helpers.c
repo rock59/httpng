@@ -20,6 +20,13 @@ debug_wait_process(lua_State *L)
 		LUA_STACK_DEBUG_IDX_PID = 1,
 		LUA_STACK_REQUIRED_PARAMS_COUNT = LUA_STACK_DEBUG_IDX_PID,
 	};
+	static const int max_total_usecs = 1000 * 1000;
+	static const int recv_iteration_usecs = 1000;
+	static const float recv_iteration_secs =
+		recv_iteration_usecs / (1000 * 1000);
+	int recv_retry_count = max_total_usecs / recv_iteration_usecs;
+	const int initial_count = recv_retry_count;
+
 	const char *lerr = NULL;
 	if (lua_gettop(L) < LUA_STACK_REQUIRED_PARAMS_COUNT) {
 		lerr = "No parameters specified";
@@ -85,25 +92,20 @@ retry_send:
 		goto retry_send;
 
 	pid_t code;
-	static const int max_total_usecs = 1000 * 1000;
-	static const int iteration_usecs = 1000;
-	const float iteration_secs = iteration_usecs / (1000 * 1000);
-	int recv_retry_count = max_total_usecs / iteration_usecs;
-	const int initial_count = recv_retry_count;
 	/* FIXME: Handle EINTR at least? */
-retry_recv:
 	if (recv(reaper_client_fd, &code, sizeof(code), 0) <
 	    (ssize_t)sizeof(code)) {
 		if (ECONNRESET == errno && --recv_retry_count != 0) {
 			/* That's ugly kludge. */
-			fiber_sleep(iteration_secs);
-			goto retry_recv;
+			close(reaper_client_fd);
+			fiber_sleep(recv_iteration_secs);
+			goto retry_everything;
 		}
 		char buf[128];
 		snprintf(buf, sizeof(buf),
 			"recv() from process_helper failed, "
 			"%d attempts %d usecs each",
-			initial_count, iteration_usecs);
+			initial_count, recv_iteration_usecs);
 		perror(buf);
 		lerr = "recv() from process_helper failed";
 		goto error_cant_recv;

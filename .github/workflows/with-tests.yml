@@ -11,7 +11,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ['ubuntu-latest', 'macos-10.15', 'macos-11']
+        # can't test on macos yet, should fix or work around tarantool buildability
+        #os: ['ubuntu-latest', 'macos-10.15', 'macos-11']
+        os: ['ubuntu-latest']
         tarantool-ref: ['1.10.11', '2.8.2']
         build-type: ['Release', 'Debug']
         enable_asan: [true, false]

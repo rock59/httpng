@@ -1251,7 +1251,6 @@ local test_req_encryption_info = function(ver)
 end
 
 g_good_handlers.test_req_encryption_info_http1 = function()
-    ensure_http2()
     test_req_encryption_info('--http1.1')
 end
 

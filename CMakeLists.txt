@@ -158,7 +158,6 @@ endif (BUILD_C_ROUTER)
 install(FILES httpng.lua DESTINATION ${TARANTOOL_INSTALL_LUADIR})
 
 add_executable(process_helper httpng/process_helper.c)
-set_target_properties(process_helper PROPERTIES OUTPUT_NAME ${CMAKE_CURRENT_SOURCE_DIR}/tests/process_helper)
 target_compile_options(process_helper PRIVATE "-Wextra")
 
 add_custom_target(test COMMAND "$ENV{SHELL}" "-c" "${CMAKE_CURRENT_SOURCE_DIR}/tests/tests_helper.sh")

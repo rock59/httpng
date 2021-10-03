@@ -99,7 +99,7 @@ end
 local my_shell_internal = function(cmd, stdout)
     if not using_popen() then
         os.remove 'tmp_pid.txt'
-        if (os.execute('tests/process_helper ' .. cmd) ~= 0) then
+        if (os.execute('./process_helper ' .. cmd) ~= 0) then
             return nil
         end
     ::retry_pid::
@@ -164,6 +164,61 @@ local function get_new_router(use_c_router)
         return router_module_c.new()
     end
     return router_module.new()
+end
+
+local foo_handler = function(req, io)
+    return { body = 'foo' }
+end
+
+local is_forced_http1_1_supported_checked = false
+local is_forced_http1_1_supported_result
+
+local is_forced_http1_1_supported = function()
+    if is_forced_http1_1_supported_checked then
+        return is_forced_http1_1_supported_result
+    end
+
+    local cfg = {handler = foo_handler}
+    my_http_cfg(cfg)
+    local cmd = curl_bin .. ' --http1.1 http://localhost:3300'
+    local result
+    if using_popen() then
+        local ph = my_shell_r(cmd)
+        result = ph:wait().exit_code
+        if result == 0 then
+            local output = ph:read()
+            if output ~= 'foo' then
+                result = -1
+            end
+        end
+    else
+        cmd = cmd .. ' -o tmp_curl.txt '
+        os.remove('tmp_curl.txt')
+        result = get_client_result(my_shell(cmd))
+        if result == 0 then
+            local file = io.open('tmp_curl.txt')
+            if (file == nil) then
+                result = -1
+            else
+                if 'foo' ~= file:read('*a') then
+                    result = -1
+                end
+                file:close()
+            end
+        end
+    end
+    http.shutdown()
+    is_forced_http1_1_supported_checked = true
+    is_forced_http1_1_supported_result = (result == 0)
+    return is_forced_http1_1_supported_result
+end
+
+local http1_1_ver_str = function()
+    local ver
+    if is_forced_http1_1_supported() then
+        return '--http1.1'
+    end
+    return ''
 end
 
 g_shuttle_size = t.group('shuttle_size')
@@ -414,22 +469,6 @@ local test_write_params = function(ver, use_tls)
         'io:write() after io:write(is_last == true) should either error or return true')
 end
 
-g_bad_handlers.test_write_params_http1_insecure = function()
-    test_write_params('--http1.1')
-end
-
-g_bad_handlers.test_write_params_http1_tls = function()
-    test_write_params('--http1.1', true)
-end
-
-g_bad_handlers.test_write_params_http2_insecure = function()
-    test_write_params('--http2')
-end
-
-g_bad_handlers.test_write_params_http2_tls = function()
-    test_write_params('--http2', true)
-end
-
 local test_write_header_params = function(ver, use_tls)
     ensure_popen()
     cfg_bad_handlers(use_tls)
@@ -489,29 +528,9 @@ local test_write_header_params = function(ver, use_tls)
     t.assert_str_matches(close_bad_shuttle_err, 'shuttle is invalid')
 end
 
-g_bad_handlers.test_write_header_params_http1_insecure = function()
-    test_write_header_params '--http1.1'
-end
-
-g_bad_handlers.test_write_header_params_http1_tls = function()
-    test_write_header_params('--http1.1', true)
-end
-
-g_bad_handlers.test_write_header_params_http2_insecure = function()
-    test_write_header_params '--http2'
-end
-
-g_bad_handlers.test_write_header_params_http2_tls = function()
-    test_write_header_params('--http2', true)
-end
-
 g_hot_reload = t.group 'hot_reload'
 g_hot_reload.before_each(ensure_shutdown_works)
 g_hot_reload.after_each(function() pcall(http.shutdown) end)
-
-local foo_handler = function(req, io)
-    return { body = 'foo' }
-end
 
 local bar_handler = function(req, io)
     return { body = 'bar' }
@@ -576,6 +595,8 @@ local get_site_content = function(extra, proto, location, str, timeout)
     else
         timeout_str = ''
     end
+
+::again::
     local cmd = curl_bin .. ' -k -s ' .. timeout_str .. extra .. target ..
         proto .. '://' .. location
     local output
@@ -590,13 +611,18 @@ local get_site_content = function(extra, proto, location, str, timeout)
         assert(result == 0, 'curl failed')
         local file = io.open('tmp_curl.txt')
         if (file == nil) then
-            error('nothing read')
+            if extra:find('--http1.1') then
+                extra = extra:gsub('--http1.1', '')
+                goto again
+            end
+            output = ''
+        else
+            output = file:read('*a')
+            file:close()
         end
-        output = file:read('*a')
-        file:close()
     end
 
-	return output
+    return output
 end
 
 local check_site_content = function(extra, proto, location, str, timeout)
@@ -616,10 +642,13 @@ local test_curl_supports_v2 = function()
     received_http1_req = false
     received_http2_req = false
     my_http_cfg{handler = check_http_version_handler}
-    check_site_content('--http2', 'http', 'localhost:3300', 'foo')
-    assert(version_handler_launched == true)
-    if (not received_http1_req and received_http2_req) then
-        http2_supported = true
+    local ok, err =
+        pcall(check_site_content, '--http2', 'http', 'localhost:3300', 'foo')
+    if ok then
+        assert(version_handler_launched == true)
+        if (not received_http1_req and received_http2_req) then
+            http2_supported = true
+        end
     end
     http2_support_checked = true
     http.shutdown()
@@ -631,6 +660,42 @@ local ensure_http2 = function()
         assert(http2_support_checked)
     end
     t.skip_if(not http2_supported, 'This test requires HTTP/2 support in curl')
+end
+
+g_bad_handlers.test_write_header_params_http1_insecure = function()
+    test_write_header_params(http1_1_ver_str())
+end
+
+g_bad_handlers.test_write_header_params_http1_tls = function()
+    test_write_header_params(http1_1_ver_str(), true)
+end
+
+g_bad_handlers.test_write_header_params_http2_insecure = function()
+    ensure_http2()
+    test_write_header_params '--http2'
+end
+
+g_bad_handlers.test_write_header_params_http2_tls = function()
+    ensure_http2()
+    test_write_header_params('--http2', true)
+end
+
+g_bad_handlers.test_write_params_http1_insecure = function()
+    test_write_params(http1_1_ver_str())
+end
+
+g_bad_handlers.test_write_params_http1_tls = function()
+    test_write_params(http1_1_ver_str(), true)
+end
+
+g_bad_handlers.test_write_params_http2_insecure = function()
+    ensure_http2()
+    test_write_params('--http2')
+end
+
+g_bad_handlers.test_write_params_http2_tls = function()
+    ensure_http2()
+    test_write_params('--http2', true)
 end
 
 local cfg_for_two_sites = function(cfg, first, second, ver, use_tls)
@@ -800,12 +865,12 @@ end
 
 g_hot_reload_with_curls.test_FLAKY_decrease_stubborn_threads_http1_insecure =
         function()
-    test_FLAKY_decrease_stubborn_threads '--http1.1'
+    test_FLAKY_decrease_stubborn_threads(http1_1_ver_str())
 end
 
 g_hot_reload_with_curls.test_FLAKY_decrease_stubborn_threads_http1_tls =
         function()
-    test_FLAKY_decrease_stubborn_threads('--http1.1', true)
+    test_FLAKY_decrease_stubborn_threads(http1_1_ver_str(), true)
 end
 
 g_hot_reload_with_curls.test_FLAKY_decrease_stubborn_threads_http2_insecure =
@@ -866,12 +931,12 @@ end
 
 g_hot_reload_with_curls.test_FLAKY_decrease_stubborn_threads_with_timeout_h1i =
         function()
-    test_FLAKY_decrease_stubborn_threads_with_timeout '--http1.1'
+    test_FLAKY_decrease_stubborn_threads_with_timeout(http1_1_ver_str())
 end
 
 g_hot_reload_with_curls.test_FLAKY_decrease_stubborn_threads_with_timeout_h1s =
         function()
-    test_FLAKY_decrease_stubborn_threads_with_timeout('--http1.1', true)
+    test_FLAKY_decrease_stubborn_threads_with_timeout(http1_1_ver_str(), true)
 end
 
 g_hot_reload_with_curls.test_FLAKY_decrease_stubborn_threads_with_timeout_h2i =
@@ -932,12 +997,12 @@ end
 
 g_hot_reload_with_curls.test_FLAKY_decr_not_so_stubborn_thr_with_timeout_h1i =
         function()
-    test_FLAKY_decrease_not_so_stubborn_thr_with_timeout '--http1.1'
+    test_FLAKY_decrease_not_so_stubborn_thr_with_timeout(http1_1_ver_str())
 end
 
 g_hot_reload_with_curls.test_FLAKY_decr_not_so_stubborn_thr_with_timeout_h1s =
         function()
-    test_FLAKY_decrease_not_so_stubborn_thr_with_timeout('--http1.1', true)
+    test_FLAKY_decrease_not_so_stubborn_thr_with_timeout(http1_1_ver_str(), true)
 end
 
 g_hot_reload_with_curls.test_FLAKY_decr_not_so_stubborn_thr_with_timeout_h2i =
@@ -992,11 +1057,11 @@ end
 --Should finish router support first.
 
 g_hot_reload.test_replace_handlers_http1_insecure = function()
-    test_replace_handlers '--http1.1'
+    test_replace_handlers(http1_1_ver_str())
 end
 
 g_hot_reload.test_replace_handlers_http1_tls = function()
-    test_replace_handlers('--http1.1', true)
+    test_replace_handlers(http1_1_ver_str(), true)
 end
 
 g_hot_reload.test_replace_handlers_http2_insecure = function()
@@ -1054,11 +1119,11 @@ local test_expected_query = function(ver, use_tls)
 end
 
 g_good_handlers.test_expected_query_http1_insecure = function()
-    test_expected_query '--http1.1'
+    test_expected_query(http1_1_ver_str())
 end
 
 g_good_handlers.test_expected_query_http1_tls = function()
-    test_expected_query('--http1.1', true)
+    test_expected_query(http1_1_ver_str(), true)
 end
 
 g_good_handlers.test_expected_query_http2_insecure = function()
@@ -1076,11 +1141,11 @@ local test_unexpected_query = function(ver, use_tls)
 end
 
 g_good_handlers.test_unexpected_query_http1_insecure = function()
-    test_unexpected_query '--http1.1'
+    test_unexpected_query(http1_1_ver_str())
 end
 
 g_good_handlers.test_unexpected_query_http1_tls = function()
-    test_unexpected_query('--http1.1', true)
+    test_unexpected_query(http1_1_ver_str(), true)
 end
 
 g_good_handlers.test_unexpected_query_http2_insecure = function()
@@ -1098,11 +1163,11 @@ local test_no_query = function(ver, use_tls)
 end
 
 g_good_handlers.test_no_query_http1_insecure = function()
-    test_no_query '--http1.1'
+    test_no_query(http1_1_ver_str())
 end
 
 g_good_handlers.test_no_query_http1_tls = function()
-    test_no_query('--http1.1', true)
+    test_no_query(http1_1_ver_str(), true)
 end
 
 g_good_handlers.test_no_query_http2 = function()
@@ -1115,7 +1180,7 @@ g_good_handlers.test_curl_supports_v1 = function()
     received_http1_req = false
     received_http2_req = false
     my_http_cfg{handler = check_http_version_handler}
-    check_site_content('--http1.1', 'http', 'localhost:3300', 'foo')
+    check_site_content(http1_1_ver_str(), 'http', 'localhost:3300', 'foo')
 
     assert(version_handler_launched == true)
     assert(received_http1_req == true)
@@ -1172,7 +1237,7 @@ local test_cancellation = function(ver, use_tls)
 end
 
 g_good_handlers.test_cancellation_http1_tls = function()
-    test_cancellation('--http1.1', true)
+    test_cancellation(http1_1_ver_str(), true)
 end
 
 g_good_handlers.test_cancellation_http2_tls = function()
@@ -1181,7 +1246,7 @@ g_good_handlers.test_cancellation_http2_tls = function()
 end
 
 g_good_handlers.test_cancellation_http1_insecure = function()
-    test_cancellation('--http1.1')
+    test_cancellation(http1_1_ver_str())
 end
 
 g_good_handlers.test_cancellation_http2_insecure = function()
@@ -1216,11 +1281,11 @@ local test_host = function(ver, use_tls)
 end
 
 g_good_handlers.test_host_http1_tls = function()
-    test_host('--http1.1', true)
+    test_host(http1_1_ver_str(), true)
 end
 
 g_good_handlers.test_host_http1_insecure = function()
-    test_host('--http1.1')
+    test_host(http1_1_ver_str())
 end
 
 g_good_handlers.test_host_http2_tls = function()
@@ -1299,11 +1364,11 @@ g_good_handlers.test_write_header_handler_http2_insecure = function()
 end
 
 g_good_handlers.test_write_header_handler_http1_tls = function()
-    test_write_header_handler('--http1.1', true)
+    test_write_header_handler(http1_1_ver_str(), true)
 end
 
 g_good_handlers.test_write_header_handler_http1_insecure = function()
-    test_write_header_handler('--http1.1')
+    test_write_header_handler(http1_1_ver_str())
 end
 
 g_good_handlers.test_write_handler_http2_tls = function()
@@ -1317,11 +1382,11 @@ g_good_handlers.test_write_handler_http2_insecure = function()
 end
 
 g_good_handlers.test_write_handler_http1_tls = function()
-    test_write_handler('--http1.1', true)
+    test_write_handler(http1_1_ver_str(), true)
 end
 
 g_good_handlers.test_write_handler_http1_insecure = function()
-    test_write_handler('--http1.1')
+    test_write_handler(http1_1_ver_str())
 end
 
 g_bad_handlers.test_faulty_handler_http2_tls = function()
@@ -1335,11 +1400,11 @@ g_bad_handlers.test_faulty_handler_http2_insecure = function()
 end
 
 g_bad_handlers.test_faulty_handler_http1_tls = function()
-    test_faulty_handler('--http1.1', true)
+    test_faulty_handler(http1_1_ver_str(), true)
 end
 
 g_bad_handlers.test_faulty_handler_http1_insecure = function()
-    test_faulty_handler('--http1.1')
+    test_faulty_handler(http1_1_ver_str())
 end
 
 local headers_to_send
@@ -1395,16 +1460,17 @@ local test_sending_headers = function(ver, use_tls)
 end
 
 g_bad_handlers.test_sending_headers_http1_insecure = function()
-    test_sending_headers('--http1.1')
+    test_sending_headers(http1_1_ver_str())
 end
 
 g_bad_handlers.test_sending_headers_http2_insecure = function()
+    ensure_http2()
     test_sending_headers('--http2')
 end
 
 --[[
 g_bad_handlers.test_sending_headers_http1_tls = function()
-    test_sending_headers('--http1.1', true)
+    test_sending_headers(http1_1_ver_str(), true)
 end
 
 g_bad_handlers.test_sending_headers_http2_tls = function()
@@ -1740,54 +1806,61 @@ local test_empty_response = function(handler, ver, use_tls)
         proto = 'http'
     end
     http.cfg(cfg)
+    --FIXME: Error message about /etc/hosts modification
     check_site_content(ver, proto, 'foo.tarantool.io:3300/', '', 3)
 end
 
 g_good_handlers.test_empty_response1_http1_insecure = function()
-    test_empty_response(empty_handler1, '--http1.1')
+    test_empty_response(empty_handler1, http1_1_ver_str())
 end
 
 g_good_handlers.test_empty_response1_http1_tls = function()
-    test_empty_response(empty_handler1, '--http1.1', true)
+    test_empty_response(empty_handler1, http1_1_ver_str(), true)
 end
 
 g_good_handlers.test_empty_response1_http2_insecure = function()
+    ensure_http2()
     test_empty_response(empty_handler1, '--http2')
 end
 
 g_good_handlers.test_empty_response1_http2_tls = function()
+    ensure_http2()
     test_empty_response(empty_handler1, '--http2', true)
 end
 
 g_good_handlers.test_empty_response2_http1_insecure = function()
-    test_empty_response(empty_handler2, '--http1.1')
+    test_empty_response(empty_handler2, http1_1_ver_str())
 end
 
 g_good_handlers.test_empty_response2_http1_tls = function()
-    test_empty_response(empty_handler2, '--http1.1', true)
+    test_empty_response(empty_handler2, http1_1_ver_str(), true)
 end
 
 g_good_handlers.test_empty_response2_http2_insecure = function()
+    ensure_http2()
     test_empty_response(empty_handler2, '--http2')
 end
 
 g_good_handlers.test_empty_response2_http2_tls = function()
+    ensure_http2()
     test_empty_response(empty_handler2, '--http2', true)
 end
 
 g_good_handlers.test_empty_response3_http1_insecure = function()
-    test_empty_response(empty_handler3, '--http1.1')
+    test_empty_response(empty_handler3, http1_1_ver_str())
 end
 
 g_good_handlers.test_empty_response3_http1_tls = function()
-    test_empty_response(empty_handler3, '--http1.1', true)
+    test_empty_response(empty_handler3, http1_1_ver_str(), true)
 end
 
 g_good_handlers.test_empty_response3_http2_insecure = function()
+    ensure_http2()
     test_empty_response(empty_handler3, '--http2')
 end
 
 g_good_handlers.test_empty_response3_http2_tls = function()
+    ensure_http2()
     test_empty_response(empty_handler3, '--http2', true)
 end
 
@@ -1808,19 +1881,21 @@ local test_post = function(ver, use_tls)
 end
 
 g_good_handlers.test_post_http2_tls = function()
+    ensure_http2()
     test_post('--http2', true)
 end
 
 g_good_handlers.test_post_http1_tls = function()
-    test_post('--http1.1', true)
+    test_post(http1_1_ver_str(), true)
 end
 
 g_good_handlers.test_post_http2_insecure = function()
+    ensure_http2()
     test_post('--http2')
 end
 
 g_good_handlers.test_post_http1_insecure = function()
-    test_post('--http1.1')
+    test_post(http1_1_ver_str())
 end
 
 local req_headers_handler = function(req, io)
@@ -1853,18 +1928,20 @@ local test_req_headers = function(ver, use_tls)
 end
 
 g_good_handlers.test_req_headers_http1_insecure = function()
-    test_req_headers('--http1.1')
+    test_req_headers(http1_1_ver_str())
 end
 
 g_good_handlers.test_req_headers_http2_insecure = function()
+    ensure_http2()
     test_req_headers('--http2')
 end
 
 g_good_handlers.test_req_headers_http1_tls = function()
-    test_req_headers('--http1.1', true)
+    test_req_headers(http1_1_ver_str(), true)
 end
 
 g_good_handlers.test_req_headers_http2_tls = function()
+    ensure_http2()
     test_req_headers('--http2', true)
 end
 
@@ -1920,19 +1997,21 @@ local test_resp_headers = function(ver, use_tls)
 end
 
 g_good_handlers.test_resp_headers_http1_insecure = function()
-    test_resp_headers('--http1.1')
+    test_resp_headers(http1_1_ver_str())
 end
 
 g_good_handlers.test_resp_headers_http2_insecure = function()
+    ensure_http2()
     test_resp_headers('--http2')
 end
 
 --[[
 g_good_handlers.test_resp_headers_http1_tls = function()
-    test_resp_headers('--http1.1', true)
+    test_resp_headers(http1_1_ver_str(), true)
 end
 
 g_good_handlers.test_resp_headers_http2_tls = function()
+    ensure_http2()
     test_resp_headers('--http2', true)
 end
 --]]
@@ -1972,18 +2051,20 @@ local test_put = function(ver, use_tls)
 end
 
 g_good_handlers.test_put_http1_insecure = function()
-    test_put('--http1.1')
+    test_put(http1_1_ver_str())
 end
 
 g_good_handlers.test_put_http2_insecure = function()
+    ensure_http2()
     test_put('--http2')
 end
 
 g_good_handlers.test_put_http1_tls = function()
-    test_put('--http1.1', true)
+    test_put(http1_1_ver_str(), true)
 end
 
 g_good_handlers.test_put_http2_tls = function()
+    ensure_http2()
     test_put('--http2', true)
 end
 
@@ -2012,18 +2093,20 @@ local test_chunked = function(ver, use_tls)
 end
 
 g_good_handlers.test_chunked_http1_insecure = function()
-    test_chunked('--http1.1')
+    test_chunked(http1_1_ver_str())
 end
 
 g_good_handlers.test_chunked_http2_insecure = function()
+    ensure_http2()
     test_chunked('--http2')
 end
 
 g_good_handlers.test_chunked_http1_tls = function()
-    test_chunked('--http1.1', true)
+    test_chunked(http1_1_ver_str(), true)
 end
 
 g_good_handlers.test_chunked_http2_tls = function()
+    ensure_http2()
     test_chunked('--http2', true)
 end
 
@@ -2097,33 +2180,37 @@ local test_content_length_implicit = function(ver, use_tls)
 end
 
 g_good_handlers.test_content_length_explicit_http1_tls = function()
-    test_content_length_explicit('--http1.1', true)
+    test_content_length_explicit(http1_1_ver_str(), true)
 end
 
 g_good_handlers.test_content_length_explicit_http2_tls = function()
+    ensure_http2()
     test_content_length_explicit('--http2', true)
 end
 
 g_good_handlers.test_content_length_explicit_http1_insecure = function()
-    test_content_length_explicit('--http1.1')
+    test_content_length_explicit(http1_1_ver_str())
 end
 
 g_good_handlers.test_content_length_explicit_http2_insecure = function()
+    ensure_http2()
     test_content_length_explicit('--http2 --http2-prior-knowledge')
 end
 
 g_good_handlers.test_content_length_implicit_http1_tls = function()
-    test_content_length_implicit('--http1.1', true)
+    test_content_length_implicit(http1_1_ver_str(), true)
 end
 
 g_good_handlers.test_content_length_implicit_http2_tls = function()
+    ensure_http2()
     test_content_length_implicit('--http2', true)
 end
 
 g_good_handlers.test_content_length_implicit_http1_insecure = function()
-    test_content_length_implicit('--http1.1')
+    test_content_length_implicit(http1_1_ver_str())
 end
 
 g_good_handlers.test_content_length_implicit_http2_insecure = function()
+    ensure_http2()
     test_content_length_implicit('--http2 --http2-prior-knowledge')
 end

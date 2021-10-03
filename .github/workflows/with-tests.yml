@@ -86,5 +86,6 @@ jobs:
         killall process_helper || true
         ulimit -n 65536 || true
         ulimit -u 4096 || true
+        ln ${{github.workspace}}/build/process_helper ${{github.workspace}}/
         ASAN_OPTIONS=detect_leaks=0 LUA_CPATH="${{github.workspace}}/build/?.dylib;${{github.workspace}}/build/?.so" build/.rocks/bin/luatest -v -r 1 tests/all.lua --shuffle all
       shell: bash

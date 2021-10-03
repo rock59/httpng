@@ -644,7 +644,7 @@ lua_req_handler_ex(h2o_req_t *req,
 int
 lua_req_handler(lua_h2o_handler_t *self, h2o_req_t *req)
 {
-	shuttle_t *const shuttle = prepare_shuttle2(req);
+	shuttle_t *const shuttle = prepare_shuttle(req);
 	if (shuttle != NULL)
 		lua_req_handler_ex(req, shuttle, 0);
 	return 0;
@@ -655,7 +655,7 @@ lua_req_handler(lua_h2o_handler_t *self, h2o_req_t *req)
 int
 router_wrapper(lua_h2o_handler_t *self, h2o_req_t *req)
 {
-	shuttle_t *const shuttle = prepare_shuttle2(req);
+	shuttle_t *const shuttle = prepare_shuttle(req);
 	if (shuttle != NULL)
 		lua_req_handler_ex(req, shuttle, 0);
 	return 0;
@@ -720,7 +720,7 @@ anchor_dispose(void *param)
 
 /* Launched in HTTP server thread. */
 shuttle_t *
-prepare_shuttle2(h2o_req_t *req)
+prepare_shuttle(h2o_req_t *req)
 {
 	thread_ctx_t *const thread_ctx = get_curr_thread_ctx();
 	shuttle_t *const shuttle = alloc_shuttle(thread_ctx);

@@ -417,8 +417,7 @@ int servername_callback(SSL *, int *, void *);
 void become_ungraceful(thread_ctx_t *);
 #endif /* SUPPORT_RECONFIG */
 
-/* FIXME: Maybe rename after changing sample C handlers? */
-shuttle_t *prepare_shuttle2(h2o_req_t *);
+shuttle_t *prepare_shuttle(h2o_req_t *);
 
 /* Launched in HTTP server thread or in TX thread
  * when !SHOULD_FREE_SHUTTLE_IN_HTTP_SERVER_THREAD.

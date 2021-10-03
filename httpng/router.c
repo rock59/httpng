@@ -238,7 +238,7 @@ check_placeholder_match(state_t *state, const char *pattern,
 static int
 req_handler(lua_h2o_handler_t *self, h2o_req_t *req)
 {
-	shuttle_t *const shuttle = prepare_shuttle2(req);
+	shuttle_t *const shuttle = prepare_shuttle(req);
 	if (shuttle == NULL)
 		return 0;
 	state_t state;

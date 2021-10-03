@@ -299,7 +299,7 @@ static inline void
 call_in_http_thr_with_lua_handler_state(lua_handler_state_func_t *func,
 	lua_handler_state_t *state)
 {
-	shuttle_t *const shuttle = my_container_of(state, shuttle_t, payload);
+	shuttle_t *const shuttle = my_container_of(state, shuttle_t, payload[0]);
 	call_from_tx(shuttle->thread_ctx->queue_from_tx, func, state,
 		shuttle->thread_ctx);
 }
@@ -2272,9 +2272,10 @@ sni_map_free(sni_map_t *sni_map)
 {
 	if (sni_map == NULL)
 		return;
-	for (size_t i = 0; i < sni_map->ssl_ctxs_size; ++i)
+	size_t i;
+	for (i = 0; i < sni_map->ssl_ctxs_size; ++i)
 		SSL_CTX_free(sni_map->ssl_ctxs[i]);
-	for (size_t i = 0; i < sni_map->sni_fields_size; ++i)
+	for (i = 0; i < sni_map->sni_fields_size; ++i)
 		free((char *)sni_map->sni_fields[i].hostname.base);
 	free(sni_map);
 }
@@ -2287,7 +2288,8 @@ conf_sni_map_cleanup(void)
 {
 	if (conf.sni_maps == NULL)
 		return;
-	for (size_t i = 0; i < conf.num_listeners; ++i)
+	size_t i;
+	for (i = 0; i < conf.num_listeners; ++i)
 		sni_map_free(conf.sni_maps[i]);
 	free(conf.sni_maps);
 }

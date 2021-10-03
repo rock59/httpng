@@ -19,12 +19,13 @@ debug_wait_process(lua_State *L)
 	enum {
 		LUA_STACK_DEBUG_IDX_PID = 1,
 		LUA_STACK_REQUIRED_PARAMS_COUNT = LUA_STACK_DEBUG_IDX_PID,
+
+		RECV_ITERATION_USECS = 1000,
 	};
-	static const int max_total_usecs = 1000 * 1000;
-	static const int recv_iteration_usecs = 1000;
-	static const float recv_iteration_secs =
-		recv_iteration_usecs / (1000 * 1000);
-	int recv_retry_count = max_total_usecs / recv_iteration_usecs;
+	static const int max_total_usecs = 1000 * 1000; /* 1 second. */
+	static const double recv_iteration_secs =
+		RECV_ITERATION_USECS / (1000 * 1000);
+	int recv_retry_count = max_total_usecs / RECV_ITERATION_USECS;
 	const int initial_count = recv_retry_count;
 
 	const char *lerr = NULL;
@@ -105,7 +106,7 @@ retry_send:
 		snprintf(buf, sizeof(buf),
 			"recv() from process_helper failed, "
 			"%d attempts %d usecs each",
-			initial_count, recv_iteration_usecs);
+			initial_count, RECV_ITERATION_USECS);
 		perror(buf);
 		lerr = "recv() from process_helper failed";
 		goto error_cant_recv;

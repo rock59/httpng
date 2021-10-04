@@ -1,5 +1,6 @@
 name: 'Build and install Tarantool'
 description: 'Builds Tarantool from source and installs it'
+# 'inputs' is the GitHub Actions way to pass params from Workflows to Actions
 inputs:
   cc:
     default: gcc

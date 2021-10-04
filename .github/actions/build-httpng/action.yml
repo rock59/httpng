@@ -1,6 +1,7 @@
 
 name: 'Build httpng'
 description: 'Builds httpng from source'
+# 'inputs' is the GitHub Actions way to pass params from Workflows to Actions
 inputs:
   cc:
     default: gcc

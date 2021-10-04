@@ -96,7 +96,7 @@ set(HEADERS ${HEADERS} httpng/openssl_utils.h)
 
 #set_source_files_properties(httpng/httpng.c PROPERTIES LANGUAGE CXX)
 #set_source_files_properties(httpng/router.c PROPERTIES LANGUAGE CXX)
-set (HTTPNG_C_SRC httpng/httpng.c
+set(HTTPNG_C_SRC httpng/httpng.c
     httpng/httpng_http_thr.c
     httpng/openssl_utils.c
 )

@@ -1268,6 +1268,7 @@ local test_host = function(ver, use_tls)
     end
     my_http_cfg(cfg)
 
+    --FIXME: Error message about /etc/hosts modification
     check_site_content(ver, proto, 'foo.tarantool.io:3300', 'foo.tarantool.io')
     check_site_content(ver, proto, 'bar.tarantool.io:3300', 'bar.tarantool.io')
 
@@ -1311,6 +1312,7 @@ local test_req_encryption_info = function(ver)
         handler = encryption_handler,
     }
 
+    --FIXME: Error message about /etc/hosts modification
     check_site_content(ver, 'http', 'foo.tarantool.io:8080', 'insecure')
     check_site_content(ver, 'https', 'foo.tarantool.io:3300', 'encrypted')
 end
@@ -1806,8 +1808,7 @@ local test_empty_response = function(handler, ver, use_tls)
         proto = 'http'
     end
     http.cfg(cfg)
-    --FIXME: Error message about /etc/hosts modification
-    check_site_content(ver, proto, 'foo.tarantool.io:3300/', '', 3)
+    check_site_content(ver, proto, 'localhost:3300/', '', 3)
 end
 
 g_good_handlers.test_empty_response1_http1_insecure = function()

@@ -55,7 +55,7 @@ if (ENABLE_ASAN)
 endif()
 
 # Find Tarantool and Lua dependecies
-set(TARANTOOL_FIND_REQUIRED ON)
+set(Tarantool_FIND_REQUIRED ON)
 find_package(Tarantool REQUIRED)
 include_directories(${TARANTOOL_INCLUDE_DIRS} third_party/h2o/include
     third_party/h2o/deps/picotls/include
@@ -144,8 +144,10 @@ endif (BUILD_C_ROUTER)
 
 if (NOT(ENABLE_ASAN))
     # Just test
-    add_custom_target(test-linkability ALL COMMAND "$ENV{SHELL}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/linkability-helper.sh"
-        "${CMAKE_CURRENT_SOURCE_DIR}/httpng.lua" "${CMAKE_CURRENT_SOURCE_DIR}/tests/linkability.lua")
+    add_custom_target(test-linkability ALL COMMAND
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/linkability-helper.sh"
+            "${CMAKE_CURRENT_SOURCE_DIR}/httpng.lua"
+	    "${CMAKE_CURRENT_SOURCE_DIR}/tests/linkability.lua")
     add_dependencies(test-linkability httpng_c)
 endif (NOT(ENABLE_ASAN))
 
@@ -160,7 +162,6 @@ install(FILES httpng.lua DESTINATION ${TARANTOOL_INSTALL_LUADIR})
 add_executable(process_helper httpng/process_helper.c)
 target_compile_options(process_helper PRIVATE "-Wextra")
 
-add_custom_target(test_certs COMMAND "$ENV{SHELL}" "-c" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_certs_helper.sh ${CMAKE_CURRENT_SOURCE_DIR}")
-add_dependencies(httpng_c test_certs) # Optional actually for httpng proper but used by tests and examples
-add_custom_target(test COMMAND "$ENV{SHELL}" "-c" "${CMAKE_CURRENT_SOURCE_DIR}/tests/tests_helper.sh ${CMAKE_CURRENT_SOURCE_DIR}")
+add_custom_target(test_certs ALL COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_certs_helper.sh" "${CMAKE_CURRENT_SOURCE_DIR}")
+add_custom_target(test COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/tests_helper.sh" "${CMAKE_CURRENT_SOURCE_DIR}")
 add_dependencies(test test_helpers test_certs process_helper httpng_c)

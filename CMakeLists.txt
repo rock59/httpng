@@ -160,5 +160,7 @@ install(FILES httpng.lua DESTINATION ${TARANTOOL_INSTALL_LUADIR})
 add_executable(process_helper httpng/process_helper.c)
 target_compile_options(process_helper PRIVATE "-Wextra")
 
+add_custom_target(test_certs COMMAND "$ENV{SHELL}" "-c" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_certs_helper.sh ${CMAKE_CURRENT_SOURCE_DIR}")
+add_dependencies(httpng_c test_certs) # Optional actually for httpng proper but used by tests and examples
 add_custom_target(test COMMAND "$ENV{SHELL}" "-c" "${CMAKE_CURRENT_SOURCE_DIR}/tests/tests_helper.sh ${CMAKE_CURRENT_SOURCE_DIR}")
-add_dependencies(test test_helpers process_helper httpng_c)
+add_dependencies(test test_helpers test_certs process_helper httpng_c)

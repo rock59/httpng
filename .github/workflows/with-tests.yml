@@ -27,10 +27,20 @@ jobs:
     steps:
     - name: Where we are?
       run: |
+        echo "OS:"
         uname -a; cat /etc/os-release || cat /etc/issue || python -m platform || true
+        echo ""
+        echo "gcc:"
         gcc --version || true
+        echo ""
+        echo "Clang:"
         clang --version || true
+        echo ""
+        echo "ld:"
         ld --version || true
+        echo ""
+        echo -n "OpenSSL: "
+        openssl version || true
       shell: bash
 
     - uses: actions/checkout@v2

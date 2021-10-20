@@ -1,4 +1,4 @@
-#!/usr/bin/bash
+#!/bin/sh
 set -exu
 
 if [ ! -e .rocks/bin/luatest ]; then

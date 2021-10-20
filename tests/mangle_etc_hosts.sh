@@ -1,4 +1,4 @@
-#!/usr/bin/bash
+#!/bin/sh
 set -exu
 
 echo '127.0.0.1 foo.tarantool.io' >>/etc/hosts

@@ -11,17 +11,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # can't test on macos yet, should fix or work around tarantool buildability
-        #os: ['ubuntu-latest', 'macos-10.15', 'macos-11']
-        os: ['ubuntu-latest']
-        tarantool-ref: ['1.10.11', '2.8.2']
+        os: ['ubuntu-latest', 'macos-10.15', 'macos-11']
+        tarantool-ref: ['1.10', 'master']
         build-type: ['Release', 'Debug']
         enable_asan: [true, false]
-        exclude:
-          - os: 'macos-10.15'
-            tarantool-ref: '1.10.11'
-          - os: 'macos-11'
-            tarantool-ref: '1.10.11'
     runs-on: ${{matrix.os}}
 
     steps:
@@ -41,12 +34,20 @@ jobs:
         echo ""
         echo -n "OpenSSL: "
         openssl version || true
+        echo ""
+        echo -n "brew: "
+        brew --version || true
+        echo ""
+        echo -n "shell: $SHELL"
       shell: bash
 
     - uses: actions/checkout@v2
 
     - name: Checkout submodules
       run: git submodule update --init --recursive
+
+    - name: Install third-party components on MacOS
+      run: if [ `uname` = Darwin ]; then brew install openssl@1.1 readline icu4c automake; fi
 
     - name: Build and install Tarantool (with ASAN)
       uses: ./.github/actions/build-tarantool

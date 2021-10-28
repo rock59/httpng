@@ -628,11 +628,7 @@ end
 local check_site_content = function(extra, proto, location, str, timeout)
     local output = get_site_content(extra, proto, location, timeout)
 
-    if (output ~= str) then
-        print('Expected: "'..str..'", actual: "'..output..'"')
-        t.assert_equals(output == str,
-            'Got unexpected response from HTTP(S) server')
-    end
+    t.assert_equals(output, str, 'Got unexpected response from HTTP(S) server')
 end
 
 local http2_support_checked = false
@@ -2048,10 +2044,7 @@ local test_put = function(ver, use_tls)
     local output = get_site_content(ver .. ' -T tmp_put.bin',
         proto, 'localhost:3300')
     os.remove('tmp_put.bin')
-    if (output ~= put) then
-        print('Expected: "' .. put .. '", actual: "' .. output .. '"')
-        t.assert_equals(output, put, 'Got unexpected response from HTTP(S) server')
-    end
+    t.assert_equals(output, put, 'Got unexpected response from HTTP(S) server')
 end
 
 g_good_handlers.test_put_http1_insecure = function()

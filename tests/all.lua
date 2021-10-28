@@ -644,11 +644,11 @@ local test_curl_supports_v2 = function()
     my_http_cfg{handler = check_http_version_handler}
     local ok, err =
         pcall(check_site_content, '--http2', 'http', 'localhost:3300', 'foo')
-    if ok then
-        assert(version_handler_launched == true)
-        if (not received_http1_req and received_http2_req) then
-            http2_supported = true
-        end
+    if not version_handler_launched then
+        return 'curl does not work properly'
+    end
+    if ok and (not received_http1_req and received_http2_req) then
+        http2_supported = true
     end
     http2_support_checked = true
     http.shutdown()
@@ -656,7 +656,8 @@ end
 
 local ensure_http2 = function()
     if (not http2_support_checked) then
-        test_curl_supports_v2()
+        local result = test_curl_supports_v2()
+        t.skip_if(result, result)
         assert(http2_support_checked)
     end
     t.skip_if(not http2_supported, 'This test requires HTTP/2 support in curl')
@@ -1189,7 +1190,8 @@ end
 
 g_good_handlers.test_curl_supports_v2 = function()
     if (not http2_support_checked) then
-        test_curl_supports_v2()
+        local result = test_curl_supports_v2()
+        assert(result == nil, result)
         assert(http2_support_checked)
     end
     assert(http2_supported,

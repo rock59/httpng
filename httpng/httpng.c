@@ -3851,6 +3851,18 @@ register_hosts(void)
 }
 
 /* Launched in TX thread. */
+static void
+warn_about_old_openssl(void)
+{
+	const unsigned long ver = OpenSSL_version_num();
+	if (ver >= 0x101010cfL)
+		return;
+	fprintf(stderr,
+		"Warning, you are using \"%s\" which is not the latest one\n",
+		OpenSSL_version(OPENSSL_VERSION));
+}
+
+/* Launched in TX thread. */
 static const char *
 configure_handler_security_listen(lua_State *L, int idx,
 	unsigned *lua_site_count_ptr
@@ -3878,6 +3890,9 @@ configure_handler_security_listen(lua_State *L, int idx,
 	    sizeof(lua_handler_state_t))
 		return "shuttle_size is too small for Lua handlers";
 
+#ifdef WARN_OLD_OPENSSL
+	warn_about_old_openssl();
+#endif /* WARN_OLD_OPENSSL */
 #ifdef SUPPORT_CONFIGURING_OPENSSL
 	if ((lerr = get_min_proto_version(L, idx, false)) != NULL)
 		return lerr;

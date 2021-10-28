@@ -47,7 +47,7 @@ end
 local ensure_shutdown_works = function()
     if not shutdown_support_checked then
         test_shutdown()
-        assert(shutdown_support_checked)
+        t.assert(shutdown_support_checked)
     end
     t.skip_if(not shutdown_works,
         'This test requires httpng.shutdown() to work')
@@ -103,7 +103,7 @@ local my_shell_internal = function(cmd, stdout)
             return nil
         end
     ::retry_pid::
-        local file = assert(io.open 'tmp_pid.txt')
+        local file = t.assert(io.open 'tmp_pid.txt')
         if (file == nil) then
             fiber.sleep(0.001)
             goto retry_pid
@@ -302,7 +302,7 @@ g_shutdown = t.group('shutdown')
 
 g_shutdown.test_simple_shutdown = function()
     local err = test_shutdown()
-    assert(shutdown_support_checked)
+    t.assert(shutdown_support_checked)
     t.fail_if(err ~= nil, err)
 end
 
@@ -604,11 +604,11 @@ local get_site_content = function(extra, proto, location, str, timeout)
         local ph = my_shell_r(cmd)
         local result = ph:wait().exit_code
         output = ph:read()
-        assert(result == 0, 'curl failed')
+        t.assert_equals(result, 0, 'curl failed')
     else
         os.remove('tmp_curl.txt')
         local result = get_client_result(my_shell(cmd))
-        assert(result == 0, 'curl failed')
+        t.assert_equals(result, 0, 'curl failed')
         local file = io.open('tmp_curl.txt')
         if (file == nil) then
             if extra:find('--http1.1') then
@@ -630,7 +630,8 @@ local check_site_content = function(extra, proto, location, str, timeout)
 
     if (output ~= str) then
         print('Expected: "'..str..'", actual: "'..output..'"')
-        assert(output == str, 'Got unexpected response from HTTP(S) server')
+        t.assert_equals(output == str,
+            'Got unexpected response from HTTP(S) server')
     end
 end
 
@@ -658,7 +659,7 @@ local ensure_http2 = function()
     if (not http2_support_checked) then
         local result = test_curl_supports_v2()
         t.skip_if(result, result)
-        assert(http2_support_checked)
+        t.assert(http2_support_checked)
     end
     t.skip_if(not http2_supported, 'This test requires HTTP/2 support in curl')
 end
@@ -772,8 +773,8 @@ g_hot_reload.test_FLAKY_after_decrease_threads = function()
 ::retry::
     local ok, err = pcall(http.cfg, cfg)
     if (not ok) then
-        assert(err == 'Unable to reconfigure until threads will shut down')
-        assert(fiber.clock() - start < 0.5)
+        t.assert_equals(err, 'Unable to reconfigure until threads will shut down')
+        t.assert_lt(fiber.clock() - start, 0.5)
         fiber.sleep(0.01)
         goto retry
     end
@@ -809,7 +810,7 @@ g_hot_reload_with_curls.after_each(shutdown_and_kill_curls)
 
 local launch_hungry_curls = function(path, ver, use_tls)
     ensure_popen()
-    assert(curls == nil)
+    t.assert_equals(curls, nil)
     curls = {}
     local curl_count = 48
     local i
@@ -852,8 +853,8 @@ local test_FLAKY_decrease_stubborn_threads = function(ver, use_tls)
     local start = fiber.clock()
 ::retry::
     local ok, err = pcall(http.cfg, cfg)
-    assert(not ok, 'httpng.cfg() should fail')
-    assert(err == 'Unable to reconfigure until threads will shut down')
+    t.assert(not ok, 'httpng.cfg() should fail')
+    t.assert_equals(err, 'Unable to reconfigure until threads will shut down')
     if (fiber.clock() - start >= 1) then
         -- We have waited long enough, this is as it should be.
         http.force_decrease_threads()
@@ -923,8 +924,8 @@ local test_FLAKY_decrease_stubborn_threads_with_timeout =
         end
         return
     end
-    assert(err == 'Unable to reconfigure until threads will shut down')
-    assert(fiber.clock() - start < cfg.thread_termination_timeout + 1,
+    t.assert_equals(err, 'Unable to reconfigure until threads will shut down')
+    t.assert_lt(fiber.clock() - start, cfg.thread_termination_timeout + 1,
         'threads have terminated too late')
     fiber.sleep(0.05)
     goto retry
@@ -966,7 +967,7 @@ local test_FLAKY_decrease_not_so_stubborn_thr_with_timeout =
 
     my_http_cfg(cfg)
 
-    assert(cfg.thread_termination_timeout > 0.1)
+    t.assert_gt(cfg.thread_termination_timeout, 0.1)
     local curls_start = fiber.clock()
     launch_hungry_curls('localhost:3300', ver, use_tls)
     fiber.sleep(0.1)
@@ -986,12 +987,12 @@ local test_FLAKY_decrease_not_so_stubborn_thr_with_timeout =
             print('now - curls_start = ', now - curls_start)
             error('threads have terminated too early');
         end
-        assert(fiber.clock() - start < cfg.thread_termination_timeout + 0.5,
+        t.assert_lt(fiber.clock() - start, cfg.thread_termination_timeout + 0.5,
             'threads have terminated too late');
         return
     end
-    assert(err == 'Unable to reconfigure until threads will shut down')
-    assert(fiber.clock() - start < cfg.thread_termination_timeout + 0.5)
+    t.assert_equals(err, 'Unable to reconfigure until threads will shut down')
+    t.assert_lt(fiber.clock() - start, cfg.thread_termination_timeout + 0.5)
     fiber.sleep(0.05)
     goto retry
 end
@@ -1183,18 +1184,18 @@ g_good_handlers.test_curl_supports_v1 = function()
     my_http_cfg{handler = check_http_version_handler}
     check_site_content(http1_1_ver_str(), 'http', 'localhost:3300', 'foo')
 
-    assert(version_handler_launched == true)
-    assert(received_http1_req == true)
-    assert(received_http2_req == false)
+    t.assert_equals(version_handler_launched, true)
+    t.assert_equals(received_http1_req, true)
+    t.assert_equals(received_http2_req, false)
 end
 
 g_good_handlers.test_curl_supports_v2 = function()
     if (not http2_support_checked) then
         local result = test_curl_supports_v2()
-        assert(result == nil, result)
-        assert(http2_support_checked)
+        t.assert_equals(result, nil, result)
+        t.assert(http2_support_checked)
     end
-    assert(http2_supported,
+    t.assert(http2_supported,
         'http/2 support in curl is required to test everything fully')
 end
 
@@ -1277,7 +1278,7 @@ local test_host = function(ver, use_tls)
     if use_tls then
         local ok, err = pcall(check_site_content, ver, proto,
             'localhost:3300', 'localhost')
-        assert(ok == false)
+        t.assert_equals(ok, false)
     else
         check_site_content(ver, proto, 'localhost:3300', 'localhost')
     end
@@ -1977,10 +1978,10 @@ local test_resp_headers_internal = function(handler, ver, use_tls)
         local k, v = string.match(s, "([0-9a-zA-Z%-]+): (.*)")
         if k then
             if response_headers[k] then
-                assert(not found[k], 'duplicated header detected')
+                t.assert(not found[k], 'duplicated header detected')
                 found[k] = true
                 count = count + 1
-                assert(response_headers[k] == v, 'header is corrupted')
+                t.assert_equals(response_headers[k], v, 'header is corrupted')
             end
         end
     end
@@ -1989,7 +1990,7 @@ local test_resp_headers_internal = function(handler, ver, use_tls)
     for _ in pairs(response_headers) do
         expected_count = expected_count + 1
     end
-    assert(count == expected_count, 'not all expected headers are present')
+    t.assert_equals(count, expected_count, 'not all expected headers are present')
 end
 
 local test_resp_headers = function(ver, use_tls)
@@ -2039,8 +2040,8 @@ local test_put = function(ver, use_tls)
 
     local put = 'This is a payload'
 
-    local file = assert(io.open('tmp_put.bin', 'wb'))
-    assert(file ~= nil, "Can't create temp file")
+    local file = t.assert(io.open('tmp_put.bin', 'wb'))
+    t.assert(file ~= nil, "Can't create temp file")
     file:write(put)
     file:close()
 
@@ -2049,7 +2050,7 @@ local test_put = function(ver, use_tls)
     os.remove('tmp_put.bin')
     if (output ~= put) then
         print('Expected: "' .. put .. '", actual: "' .. output .. '"')
-        assert(output == put, 'Got unexpected response from HTTP(S) server')
+        t.assert_equals(output, put, 'Got unexpected response from HTTP(S) server')
     end
 end
 
@@ -2154,9 +2155,9 @@ local test_content_length_internal = function(handler, ver, use_tls)
     for _, s in ipairs(lines) do
         local k, v = string.match(s, "([0-9a-zA-Z%-]+): (.*)")
         if k ~= nil and string.lower(k) == 'content-length' then
-            assert(not found)
+            t.assert_not(found)
             found = true
-            assert(v == '6', 'Content-Length is invalid')
+            t.assert_equals(v, '6', 'Content-Length is invalid')
         else
             if k == nil then
                 if headers_found then
@@ -2170,8 +2171,8 @@ local test_content_length_internal = function(handler, ver, use_tls)
     end
 
 ::done::
-    assert(remainder == 'foobar', 'Body is broken')
-    assert(found, 'No Content-Length header found')
+    t.assert_equals(remainder, 'foobar', 'Body is broken')
+    t.assert(found, 'No Content-Length header found')
 end
 
 local test_content_length_explicit = function(ver, use_tls)
